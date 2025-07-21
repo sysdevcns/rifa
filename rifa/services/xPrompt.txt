@@ -1,0 +1,129 @@
+PROMPT PARA DESENVOLVIMENTO - SISTEMA DE RIFA/LOTERIA
+CONTEXTO
+Você é um desenvolvedor Python especializado em Streamlit e precisa criar um sistema completo de gerenciamento de rifas/loterias. O sistema deve ser robusto, seguro e fácil de usar.
+MISSÃO
+Desenvolver uma aplicação web usando Streamlit + Python + PostgreSQL hospedada no Railway para gerenciar rifas com números de 0-999, controle de usuários, pagamentos e relatórios detalhados.
+ESPECIFICAÇÕES TÉCNICAS
+STACK TECNOLÓGICA
+
+Frontend: Streamlit
+Backend: Python 3.9+
+Banco: PostgreSQL (Railway)
+Bibliotecas: streamlit, psycopg2, pandas, hashlib, datetime
+
+ARQUITETURA DO SISTEMA
+
+Autenticação: Sistema com 4 perfis (APOSTADOR, ASSISTENTE, ADMINISTRADOR, DESENVOLVEDOR)
+Interface: Multi-páginas com navegação baseada em permissões
+Banco: 7 tabelas principais com relacionamentos FK
+Segurança: Hash de senhas, controle de sessão, validação de inputs
+
+FUNCIONALIDADES POR MÓDULO
+🔐 MÓDULO DE AUTENTICAÇÃO
+python# Implementar:
+- Login/logout com sessão persistente
+- Hash de senhas (bcrypt/hashlib)
+- Middleware de autorização por perfil
+- Redirecionamento baseado em permissões
+👥 GESTÃO DE USUÁRIOS E APOSTADORES
+python# CRUD Apostadores com campos:
+nome, apelido*, ddd, telefone, email, endereco, status
+# *apelido deve ser único e obrigatório
+🎲 SISTEMA DE EVENTOS E JOGOS
+python# Grid 25x40 (1000 números: 0-999)
+# Estados: DISPONÍVEL(azul), RESERVADO(amarelo), VENDIDO(vermelho)
+# Click interativo para reservar/liberar números
+# Validação: 1 evento ativo por vez
+💰 CONTROLE DE PAGAMENTOS
+python# Status: PENDENTE → QUITADO
+# Integração com reservas de números
+# Histórico completo de transações
+🔧 JOGOS FIXOS
+python# Números automáticos por apostador
+# Validação: sem duplicatas (0-999 únicos)
+# Auto-reserva ao criar novo evento
+📊 RELATÓRIOS
+python# Grid 10x100 com células compostas
+# Estrutura: [Apelido][Status][Premiação]
+#           [Número][Pagamento][Resultado]
+# Export para WhatsApp com validação de contato
+REGRAS DE NEGÓCIO CRÍTICAS
+⚠️ VALIDAÇÕES OBRIGATÓRIAS
+
+Evento único: Não permitir novo evento se existir ativo
+Números fixos: Auto-reservar ao criar evento
+Unicidade: Apelidos únicos, números fixos sem duplicata
+Status flow: DISPONÍVEL → RESERVADO → VENDIDO (irreversível)
+Permissões: Acesso rigoroso baseado no perfil do usuário
+
+🔄 FLUXO PRINCIPAL
+1. Admin cria evento → Reserva automática de números fixos
+2. Apostador seleciona números → Status RESERVADO  
+3. Assistente confirma pagamento → Status VENDIDO
+4. Admin finaliza evento → Relatório final + liberação para novo evento
+ESTRUTURA DE PASTAS SUGERIDA
+projeto_rifa/
+├── app.py                 # App principal Streamlit
+├── config/
+│   ├── database.py        # Conexão PostgreSQL
+│   └── settings.py        # Configurações gerais
+├── models/
+│   ├── usuarios.py        # CRUD usuários
+│   ├── apostadores.py     # CRUD apostadores  
+│   ├── eventos.py         # CRUD eventos
+│   ├── jogos.py          # CRUD jogos/números
+│   └── pagamentos.py      # CRUD pagamentos
+├── utils/
+│   ├── auth.py           # Sistema autenticação
+│   ├── validators.py     # Validações
+│   └── whatsapp.py       # Integração WhatsApp
+└── pages/
+    ├── login.py          # Tela de login
+    ├── dashboard.py      # Dashboard por perfil
+    ├── apostadores.py    # Gestão apostadores
+    ├── eventos.py        # Gestão eventos
+    ├── jogos.py         # Grid de seleção
+    ├── pagamentos.py    # Controle financeiro
+    └── relatorios.py    # Relatórios e exports
+DELIVERABLES ESPERADOS
+📋 FASE 1: ESTRUTURA BASE
+
+ Conexão com PostgreSQL (Railway)
+ Sistema de autenticação completo
+ CRUD básico de todas as tabelas
+ Interface Streamlit navegável
+
+📋 FASE 2: FUNCIONALIDADES CORE
+
+ Grid interativo de seleção (25x40)
+ Sistema de reservas com validações
+ Controle de eventos e status
+ Jogos fixos com auto-reserva
+
+📋 FASE 3: RELATÓRIOS E INTEGRAÇÃO
+
+ Relatório "Jogos Realizados" (10x100)
+ Integração WhatsApp
+ Validações de negócio completas
+ Testes e deploy no Railway
+
+CRITÉRIOS DE QUALIDADE
+
+✅ Usabilidade: Interface intuitiva e responsiva
+✅ Performance: Carregamento rápido do grid 1000 números
+✅ Segurança: Controle de acesso rigoroso
+✅ Confiabilidade: Validações e tratamento de erros
+✅ Manutenibilidade: Código limpo e documentado
+
+INSTRUÇÕES ESPECÍFICAS
+
+Use session_state do Streamlit para controle de estado
+Implemente conexão pooling para o banco
+Crie componentes reutilizáveis para o grid
+Adicione logs de auditoria para operações críticas
+Valide todos os inputs antes de persistir no banco
+
+
+OBJETIVO FINAL: Sistema funcional, seguro e escalável para gerenciar rifas/loterias com interface profissional e controle completo do negócio.
+PRAZO SUGERIDO: 2-3 semanas para MVP completo
+PRÓXIMOS PASSOS: Começar pela estrutura do banco + autenticação + CRUD básico

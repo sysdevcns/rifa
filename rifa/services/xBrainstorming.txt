@@ -1,0 +1,428 @@
+cliente_jordavi
+Cliente@jordavi_2K2x
+
+
+PROJETO: RIFA
+
+Inicio do escopo do projeto (idea):
+Crie uma aplicação web usando Streamlit com Python e banco de dados Postgre hospedado no servidor Railway com a seguinte descrição:
+
+
+Formulário para realizar o login, é necessário ter 4 perfis de acesso, são eles:
+
+APOSTADOR: 
+deve ter acesso ao formulário LISTA DE APOSTADORES apenas para se cadastrar como apostador e visualizar somente o seu próprio registro;
+também deve ter acesso ao formulário RESUMO DOS JOGOS para ver o grid completo de números e selecionar números com status DISPONIVEL ou cancelar números que tenham sido reservados por ele.
+
+ASSISTENTE: 
+deve ter acesso ao formulário LISTA DE APOSTADORES para consultar, alterar e excluir apostadores;
+deve ter acesso ao formulário PROGRAMAÇÃO DE EVENTOS para cadastrar, consultar, alterar e excluir eventos (eventos que já tenham sido finalizados não podem ser alterados e nem excluídos);
+deve ter acesso ao formulário CONTROLE DE PAGAMENTOS para incluir e consultar pagamentos;
+deve ter acesso ao formulário JOGOS FIXOS para incluir e consultar jogos;
+
+ADMINISTRADOR:
+deve ter acesso completo para CRUD do formulário LISTA DE APOSTADORES;
+deve ter acesso completo para CRUD do formulário PROGRAMAÇÃO DE EVENTOS;
+deve ter acesso completo para CRUD do formulário CONTROLE DE PAGAMENTOS;
+deve ter acesso completo para CRUD do formulário JOGOS FIXOS;
+deve ter acesso completo para CRUD do formulário NÚMEROS DE BILHETES;
+pode cadastrar e editar usuários do tipo APOSTADOR e ASSISTENTE.
+
+DESENVOLVEDOR:
+deve ter acesso full a todo o sistema de modo geral, é o usuário Master, somente este usuário tem a acesso ao código fonte, arquitetura, estrutura de dados, informações de configurações e publicação da aplicação.
+
+
+Formulário: LISTA DE APOSTADORES;
+Tabela: Apostadores;
+Campos: Nome, Apelido, DDD, Telefone, Email, Endereco e Status.
+
+
+Formulário: PROGRAMAÇÃO DE EVENTOS;
+Tabela: Eventos;
+Campos: Nome, Tipo, Divulgacao, Ticket, Premio, Trave, Resultado, Descricao, Concurso e Status.
+
+
+Formulário: CONTROLE DE PAGAMENTOS;
+Tabela: Pagamentos;
+Campos: Numero, Status, Grupo, Apelido, Bilhete e Pagamento.
+
+
+Formulário: JOGOS FIXOS;
+Tabela: Fixos;
+Campos: Apelido, Numero, Bilhete, Grupo e Status.
+
+
+Formulário: NÚMEROS DE BILHETES;
+Tabela: Bilhetes;
+Campos: Numero.
+
+
+Formulário: SELECIONAR JOGOS;
+Tabela: Jogos;
+Campos: id, evento_id, numero, status, apelido, data reserva, data venda;
+
+No formulário de jogos deve conter uma lista para selecionar o EVENTO (oriundo da tabela Eventos) e uma objeto do tipo tabela contendo 25 colunas e 40 linhas que devem ser preenchidas com valores de 0 a 999, preenchida da esquerda para direita, de cima para baixo e os valores devem ser exibidos como "000".
+
+Cada célula da tabela deve conter a ação de clicar, onde, ao clicar, irá selecionar ou liberar o número da própria célula, é necessário realizar o controle destes números através da tabela Jogos de forma que para cada Evento tenha a numeração de 0 a 999 e os números selecionados e confirmados fiquem bloqueados.
+Os número bloqueados serão considerados como RESERVADO até que o pagamento seja confirmado, se a reserva for cancelada, o número deve ser liberado.
+Os números que tiverem o pagamento confirmado, serão considerados como VENDIDO.
+Os números liberados serão considerados como DISPONIVEL.
+A célula da tabela cujo o status for DISPONIVEL deverá ter a cor de fundo azul e o texto na cor branca;
+A célula da tabela cujo o status for RESERVADO deverá ter a cor de fundo amarelo e o texto na cor preta;
+A célula da tabela cujo o status for VENDIDO deverá ter a cor de fundo vermelho e o texto na cor branca.
+
+Funcionalidades:
+1 - não pode ser criado um novo Evento enquanto houver um Evento não finalizado;
+2 - sempre que for criado um novo Evento, a tabela Fixos deve ser consulta para verificar os jogadores fixos, para estes jogadores, deve ser selecionado os números automaticamente e gerar o registro de pendente na tabela Pagamentos;
+3 - os números na tabela Fixos devem ser de 0 a 999 e não podem repetir.
+
+
+Página de relatório: JOGOS REALIZADOS
+Deverá ser exibido em uma nova janela, com as seguintes informações:
+
+Titulo:
+Nome do projeto = LOTERIA (posicionado a esquerda);
+Data e hora atual (na mesma linha do Nome do projeto, posicionado a direita);
+
+Subtitulo: posicionado Lado a Lado
+Evento = campo Nome da tabela Eventos;
+Tipo = campo Tipo da tabela Eventos; 
+Data = campo Divulgacao da tabela Eventos;
+Premio = campo Premio da tabela Eventos;
+Trave = campo Trave da tabela Eventos;
+
+Legenda = status DISPONIVEL, RESERVADO e VENDIDO (posicionado abaixo da data e hora atual);
+
+
+Grid com 10 colunas e 100 linhas, sendo preenchida com ID de 0 a 999, da esquerda para direita e de cima para baixo.
+Cada célula deve subdividida 3 colunas e 2 linhas, conforme segue;
+A linha de superior da célula deve exibir o Apelido do apostador,  um ícone que represente o Status do Jogo (DISPONIVEL, RESERVADO ou VENDIDO) e um ícone informando se foi premiado, se acertou trave, se foi premiado e ainda acertou trave ou se não foi premiado e nem acertou trave;
+Na linha de inferior da célula deve exibir o Número do ID com a mascara "000",  um ícone que represente o Status de Pagamento (PENDENTE ou QUITADO) e a letra "P" quando for premiado, a letra "T" se foi trave, a letra "F" se foi premiado e ainda acertou trave ou vazio se não foi premiado e nem acertou trave.
+
+Precisa ter uma funcionalidade para quando clicar em uma célula do formulário JOGOS REALIZADOS exibir uma mensagem para confirmar ou cancelar o envio da célula para o WhatsApp do jogador, quando tiver o DDD e Telefone cadastrado.
+
+Fim do Escopo do Projeto -------------------------------------------------------
+
+
+
+Análise e Estruturação do Projeto
+Analisei o documento e criei duas entregas importantes:
+1. Especificação Técnica Estruturada
+Reorganizei a ideia original em um documento técnico profissional com:
+
+Visão clara da arquitetura (Streamlit + PostgreSQL + Railway)
+Sistema de perfis bem definido (4 níveis de acesso)
+Estrutura completa do banco de dados (7 tabelas)
+Regras de negócio detalhadas
+Layout do relatório "Jogos Realizados"
+
+2. Prompt de Desenvolvimento Prático
+Criei um prompt estruturado para desenvolvimento contendo:
+
+Stack tecnológica específica
+Arquitetura modular sugerida
+Funcionalidades divididas por módulos
+Estrutura de pastas organizada
+Deliverables em 3 fases
+Critérios de qualidade definidos
+
+
+
+Considerando todo o contexto atual, os scripts e a estrutura de banco de dados informada logo abaixo, analise e verifique se há métodos faltando ou sobrando e se há erros e me envie o script com os devidos ajustes, segue:
+
+
+Estrutura MVC (no VSCode) para Aplicação de Apostas:
+/RIFA
+│
+├── /models
+│   ├── __init__.py
+│   ├── apostador_model.py
+│   ├── evento_model.py
+│   ├── jogo_model.py
+│   ├── pagamento_model.py
+│   ├── fixo_model.py
+│   └── bilhete_model.py
+│
+├── /views
+│   ├── __init__.py
+│   ├── apostador_view.py
+│   ├── evento_view.py
+│   ├── jogo_view.py
+│   ├── pagamento_view.py
+│   ├── fixo_view.py
+│   ├── bilhete_view.py
+│   └── relatorio_view.py
+│
+├── /controllers
+│   ├── __init__.py
+│   ├── apostador_controller.py
+│   ├── evento_controller.py
+│   ├── jogo_controller.py
+│   ├── pagamento_controller.py
+│   ├── fixo_controller.py
+│   ├── bilhete_controller.py
+│   └── relatorio_controller.py
+│
+├── /services
+│   ├── __init__.py
+│   ├── auth_service.py
+│   ├── db_service.py
+│   └── whatsapp_service.py
+│
+├── app.py
+└── config.py
+
+
+# Configuração da conexão com o PostgreSQL (Railway)
+def get_connection():
+    try:
+        conn = psycopg.connect(
+            dbname=st.secrets["DB_NAME"],
+            user=st.secrets["DB_USER"],
+            password=st.secrets["DB_PASSWORD"],
+            host=st.secrets["DB_HOST"],
+            port=st.secrets["DB_PORT"]
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Erro ao conectar ao banco de dados: {e}")
+        return None
+
+
+# Função para criar tabelas se não existirem
+def create_tables():
+    conn = get_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+		
+            # Tabela Usuarios
+            cur.execute
+            ("""
+                CREATE TABLE IF NOT EXISTS Usuarios
+                (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(50) UNIQUE NOT NULL,
+                    password VARCHAR(100) NOT NULL,
+                    perfil VARCHAR(20) NOT NULL CHECK (perfil IN 				('APOSTADOR', 'ASSISTENTE', 'ADMINISTRADOR', 'DESENVOLVEDOR')),
+                    apelido VARCHAR(50) REFERENCES Apostadores(Apelido),
+                    ativo BOOLEAN DEFAULT TRUE,
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    data_atualizacao TIMESTAMP
+                )
+            """)
+            
+            # Tabela Apostadores
+            cur.execute
+            ("""
+                CREATE TABLE IF NOT EXISTS Apostadores 
+                (
+                    id SERIAL PRIMARY KEY,
+                    Nome VARCHAR(100) NOT NULL,
+                    Apelido VARCHAR(50) UNIQUE NOT NULL,
+                    DDD VARCHAR(2),
+                    Telefone VARCHAR(15),
+                    Email VARCHAR(100),
+                    Endereco TEXT,
+                    Status VARCHAR(20) DEFAULT 'Ativo',
+                    data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Tabela Bilhetes
+            cur.execute
+            ("""
+		        CREATE TABLE IF NOT EXISTS Bilhetes
+		        (
+			        id SERIAL PRIMARY KEY,
+    			    numero VARCHAR(50) UNIQUE NOT NULL,
+    			    tipo VARCHAR(20),
+    			    lote VARCHAR(20),
+    			    status VARCHAR(20) DEFAULT 'Disponível',
+    			    observacoes TEXT,
+    			    data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		        )
+            """)
+            
+            # Tabela Eventos
+            cur.execute 
+            ("""
+                CREATE TABLE IF NOT EXISTS Eventos 
+                (
+                    id SERIAL PRIMARY KEY,
+                    Nome VARCHAR(100) NOT NULL,
+                    Tipo VARCHAR(50),
+                    Divulgacao DATE,
+                    Ticket DECIMAL(10, 2),
+                    Premio DECIMAL(15, 2),
+                    Trave DECIMAL(10, 2),
+                    Resultado VARCHAR(50),
+                    Descricao TEXT,
+                    Concurso VARCHAR(50),
+                    Status VARCHAR(20) DEFAULT 'Ativo',
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Tabela Fixos
+	        cur.execute
+            ("""
+		        CREATE TABLE IF NOT EXISTS Fixos 
+		        (
+			        id SERIAL PRIMARY KEY,
+    			    apelido VARCHAR(50) REFERENCES Apostadores(Apelido),
+			        numero VARCHAR(3) NOT NULL CHECK (numero ~ '^[0-9]{1,3}$'),
+			        grupo VARCHAR(50),
+			        status VARCHAR(20) DEFAULT 'Ativo',
+			        data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(apelido, numero)
+                )
+            """)
+                        
+            # Tabela Jogos
+		    cur.execute
+            ("""
+    		    CREATE TABLE IF NOT EXISTS Jogos
+                (
+                    id SERIAL PRIMARY KEY,
+                    evento_id INTEGER REFERENCES Eventos(id),
+                    numero VARCHAR(3) NOT NULL CHECK (Numero ~ '^[0-9]{1,3}$'),
+                    status VARCHAR(10) DEFAULT 'DISPONIVEL' CHECK (status IN ('DISPONIVEL', 'RESERVADO', 'VENDIDO')),
+                    apelido VARCHAR(50) REFERENCES Apostadores(Apelido),
+                    data_reserva TIMESTAMP,
+                    data_venda TIMESTAMP,
+                    UNIQUE(evento_id, numero)
+	            )
+	        """)
+
+            # Tabela Pagamentos
+            cur.execute
+            ("""
+                CREATE TABLE IF NOT EXISTS Pagamentos
+                (
+                    id SERIAL PRIMARY KEY,
+                    numero VARCHAR(50) UNIQUE NOT NULL,
+                    status VARCHAR(20) DEFAULT 'Pendente',
+                    grupo VARCHAR(50),
+                    apelido VARCHAR(50) REFERENCES Apostadores(Apelido),
+                    bilhete VARCHAR(100),
+                    valor DECIMAL(15, 2) NOT NULL,
+                    metodo VARCHAR(20) NOT NULL CHECK (metodo IN ('PIX', 'Dinheiro', 'Cartão Débito', 'Cartão Crédito', 'Transferência', 'Boleto')),
+                    observacoes TEXT,
+                    data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    data_pagamento TIMESTAMP,
+                    comprovante BYTEA
+                )
+            """)
+          
+            conn.commit()
+            st.success("Tabelas verificadas/criadas com sucesso!")
+        except Exception as e:
+            st.error(f"Erro ao criar tabelas: {e}")
+        finally:
+            cur.close()
+            conn.close()
+
+
+=== RIFA ===
+
+# Arquivo de configuração de acesso ao banco de dados
+--- config.py ---
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Config:
+    DB_URL = os.getenv('DATABASE_URL')
+    SECRET_KEY = os.getenv('SECRET_KEY', 'secret-key-default')
+    PER_PAGE = 20
+
+
+
+# Arquivo principal para iniciar a aplicação
+--- app.py ---
+
+import streamlit as st
+
+from services.auth_service import AuthService
+from services.db_service import DatabaseService
+from views.apostador_view import ApostadorView
+from views.bilhete_view import BilheteView
+from views.evento_view import EventoView
+from views.fixo_view import FixoView
+from views.jogo_view import JogoView
+from views.pagamento_view import PagamentoView
+from views.relatorio_view import RelatorioView
+
+class App:
+    def __init__(self):
+        self._init_session()
+        self._init_db()
+        
+
+    def _init_session(self):
+        if 'user' not in st.session_state:
+            st.session_state.user = None
+        if 'logged_in' not in st.session_state:
+            st.session_state.logged_in = False
+
+
+    def _init_db(self):
+        DatabaseService.create_tables()
+        
+
+    def show_login(self):
+        AuthService.show_login_form()
+        
+
+    def show_authorized_content(self):
+        user = st.session_state.user
+        
+        st.sidebar.title(f"RIFA | {user['perfil']}")
+        st.sidebar.markdown(f"Usuário: {user['username']}")
+        
+        # Menu baseado no perfil
+        menu_items = []
+        
+        # Apostadores - disponível para todos os perfis
+        menu_items.append(("Apostadores", ApostadorView.show_form))
+        
+        # Jogos - disponível para todos os perfis
+        menu_items.append(("Jogos", JogoView.show_form))
+        
+        if user['perfil'] in ['ASSISTENTE', 'ADMINISTRADOR', 'DESENVOLVEDOR']:
+            menu_items.append(("Eventos", EventoView.show_form))
+            menu_items.append(("Pagamentos", PagamentoView.show_form))
+        
+        if user['perfil'] in ['ADMINISTRADOR', 'DESENVOLVEDOR']:
+            menu_items.append(("Jogos Fixos", FixoView.show_form))
+            menu_items.append(("Bilhetes", BilheteView.show_form))
+        
+        if user['perfil'] == 'DESENVOLVEDOR':
+            menu_items.append(("Relatórios", RelatorioView.show_form))
+        
+        # Adicionar logout
+        if st.sidebar.button("Sair"):
+            st.session_state.user = None
+            st.session_state.logged_in = False
+            st.rerun()
+        
+        menu = st.sidebar.radio("Menu", [item[0] for item in menu_items])
+        
+        for item in menu_items:
+            if menu == item[0]:
+                item[1]()
+                break
+            
+
+    def run(self):
+        if not st.session_state.logged_in:
+            self.show_login()
+        else:
+            self.show_authorized_content()
+
+if __name__ == "__main__":
+    app = App()
+    app.run()
+

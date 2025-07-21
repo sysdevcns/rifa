@@ -1,0 +1,4011 @@
+=== SERVICES ===
+
+--- auth_service.py ---
+import hashlib
+import streamlit as st
+from services.db_service import DatabaseService
+
+class AuthService:
+    @staticmethod
+    def make_hash(password):
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    @staticmethod
+    def authenticate(username, password):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, username, password, perfil, apelido 
+                    FROM Usuarios 
+                    WHERE username = %s AND ativo = TRUE""",
+                    (username,)
+                )
+                user = cur.fetchone()
+                if user and user[2] == AuthService.make_hash(password):
+                    return {
+                        'id': user[0],
+                        'username': user[1],
+                        'perfil': user[3],
+                        'apelido': user[4]
+                    }
+                return None
+        except Exception as e:
+            st.error(f"Erro de autenticação: {str(e)}")
+            return None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def check_permission(required_perfil):
+        user = st.session_state.get('user')
+        if not user:
+            return False
+        
+        hierarchy = {
+            'DESENVOLVEDOR': 4,
+            'ADMINISTRADOR': 3,
+            'ASSISTENTE': 2,
+            'APOSTADOR': 1
+        }
+        
+        return hierarchy[user['perfil']] >= hierarchy[required_perfil]
+
+    @staticmethod
+    def show_login_form():
+        with st.form("login_form"):
+            st.subheader("Acesso ao Sistema")
+            username = st.text_input("Usuário", key="login_username")
+            password = st.text_input("Senha", type="password", key="login_password")
+            
+            if st.form_submit_button("Entrar", type="primary"):
+                user = AuthService.authenticate(username, password)
+                if user:
+                    st.session_state.user = user
+                    st.session_state.logged_in = True
+                    st.rerun()  # Força a atualização da página
+                else:
+                    st.error("Usuário ou senha inválidos")
+                    st.session_state.logged_in = False
+
+--- db_service.py ---
+import psycopg
+from urllib.parse import urlparse
+from config import Config
+
+class DatabaseService:
+    @staticmethod
+    def get_connection():
+        try:
+            url = urlparse(Config.DB_URL)
+            conn = psycopg.connect(
+                host=url.hostname,
+                port=url.port,
+                dbname=url.path[1:],
+                user=url.username,
+                password=url.password
+            )
+            return conn
+        except Exception as e:
+            raise Exception(f"Erro ao conectar ao banco de dados: {e}")
+
+    @staticmethod
+    def create_tables():
+        # Implementação da criação de tabelas
+        pass
+
+
+--- watermark.py ---
+import streamlit as st
+
+def show():
+    """Exibe marca d'água em todas as páginas"""
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("""
+    <style>
+        .watermark {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            color: rgba(128, 128, 128, 0.5);
+            font-size: 12px;
+            z-index: 1000;
+        }
+    </style>
+    <div class="watermark">by Sidney Moraes ®</div>
+    """, unsafe_allow_html=True)
+
+--- whatsapp_service.py ---
+from controllers.apostador_controller import ApostadorController
+
+class WhatsAppService:
+    @staticmethod
+    def get_whatsapp_link(apelido, numero_jogo, evento_nome, status_jogo):
+        apostador = ApostadorController.get_by_apelido(apelido)
+        if not apostador or not apostador['DDD'] or not apostador['Telefone']:
+            return None
+        
+        # Remover caracteres não numéricos do telefone
+        telefone = ''.join(filter(str.isdigit, apostador['Telefone']))
+        
+        whatsapp_url = f"https://wa.me/55{apostador['DDD']}{telefone}"
+        mensagem = (
+            f"Olá {apostador['Nome'].split()[0]}! "
+            f"Informações sobre seu jogo:\n\n"
+            f"• Número: {numero_jogo}\n"
+            f"• Evento: {evento_nome}\n"
+            f"• Status: {status_jogo}\n\n"
+            f"Obrigado por participar!"
+        )
+        
+        return f"{whatsapp_url}?text={mensagem.replace(' ', '%20').replace('\n', '%0A')}"
+
+--- __init__.py ---
+# Package initialization
+
+
+=== MODELS ===
+
+--- apostador_model.py ---
+from services.db_service import DatabaseService
+
+class ApostadorModel:
+    @staticmethod
+    def create(nome, apelido, ddd=None, telefone=None, email=None, endereco=None):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO Apostadores 
+                    (Nome, Apelido, DDD, Telefone, Email, Endereco) 
+                    VALUES (%s, %s, %s, %s, %s, %s) 
+                    RETURNING id""",
+                    (nome, apelido, ddd, telefone, email, endereco)
+                )
+                apostador_id = cur.fetchone()[0]
+                conn.commit()
+                return apostador_id
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def update(apelido, **kwargs):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = "UPDATE Apostadores SET "
+                params = []
+                updates = []
+                
+                for key, value in kwargs.items():
+                    if value is not None:
+                        updates.append(f"{key} = %s")
+                        params.append(value)
+                
+                if not updates:
+                    raise ValueError("Nenhum campo para atualizar")
+                
+                query += ", ".join(updates) + " WHERE Apelido = %s"
+                params.append(apelido)
+                
+                cur.execute(query, params)
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def deactivate(apelido):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE Apostadores SET Status = 'Inativo' WHERE Apelido = %s",
+                    (apelido,)
+                )
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def search(nome=None, apelido=None, status=None, only_active=False):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT id, Nome as nome, Apelido as apelido, DDD as ddd,
+                        Telefone as telefone, Email as email, Endereco as endereco,
+                        Status as status 
+                        FROM Apostadores WHERE 1=1"""
+                params = []
+                
+                if nome:
+                    query += " AND Nome ILIKE %s"
+                    params.append(f"%{nome}%")
+                
+                if apelido:
+                    query += " AND Apelido ILIKE %s"
+                    params.append(f"%{apelido}%")
+                
+                if status:
+                    query += " AND Status = %s"
+                    params.append(status)
+                elif only_active:
+                    query += " AND Status = 'Ativo'"
+                
+                query += " ORDER BY Nome"
+                
+                cur.execute(query, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def count_active():
+        """Conta apostadores ativos"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM Apostadores 
+                    WHERE Status = 'Ativo'
+                """)
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_all_active():
+        """Obtém todos os apostadores ativos"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, Nome as nome, Apelido as apelido, DDD as ddd,
+                    Telefone as telefone, Email as email, Status
+                    FROM Apostadores
+                    WHERE Status = 'Ativo'
+                    ORDER BY Nome
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_by_apelido(apelido):
+        """Obtém apostador pelo apelido"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, Nome as nome, Apelido as apelido, DDD as ddd,
+                    Telefone as telefone, Email as email, Status
+                    FROM Apostadores
+                    WHERE Apelido = %s
+                """, (apelido,))
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else None
+        finally:
+            conn.close()
+
+--- bilhete_model.py ---
+from services.db_service import DatabaseService
+
+class BilheteModel:
+    @staticmethod
+    def create(numero, tipo, lote=None, status="Disponível", observacoes=None):
+        """Cria um novo bilhete no banco de dados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO Bilhetes 
+                    (numero, tipo, lote, status, observacoes) 
+                    VALUES (%s, %s, %s, %s, %s) 
+                    RETURNING id""",
+                    (numero, tipo, lote, status, observacoes)
+                )
+                conn.commit()
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    
+    @staticmethod
+    def search(**filters):
+        """Busca bilhetes com filtros"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT id, numero, tipo, lote, status, observacoes, 
+                        data_cadastro FROM Bilhetes WHERE 1=1"""
+                params = []
+                
+                if filters.get('numero'):
+                    query += " AND numero ILIKE %s"
+                    params.append(f"%{filters['numero']}%")
+                    
+                if filters.get('tipo') and filters['tipo'] != 'Todos':
+                    query += " AND tipo = %s"
+                    params.append(filters['tipo'])
+                    
+                if filters.get('status') and filters['status'] != 'Todos':
+                    query += " AND status = %s"
+                    params.append(filters['status'])
+                    
+                if filters.get('lote'):
+                    query += " AND lote ILIKE %s"
+                    params.append(f"%{filters['lote']}%")
+                    
+                if filters.get('data_inicio'):
+                    query += " AND data_cadastro >= %s"
+                    params.append(filters['data_inicio'])
+                    
+                if filters.get('data_fim'):
+                    query += " AND data_cadastro <= %s"
+                    params.append(filters['data_fim'])
+                
+                query += " ORDER BY data_cadastro DESC"
+                cur.execute(query, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar bilhetes: {str(e)}")
+        finally:
+            conn.close()
+
+    
+    @staticmethod
+    def get_available(filters=None):
+        """Obtém bilhetes disponíveis com filtros opcionais"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT id, numero, tipo, lote, status, observacoes 
+                          FROM Bilhetes WHERE status = 'Disponível'"""
+                params = []
+                
+                if filters:
+                    if filters.get('tipo'):
+                        query += " AND tipo = %s"
+                        params.append(filters['tipo'])
+                    if filters.get('lote'):
+                        query += " AND lote = %s"
+                        params.append(filters['lote'])
+                
+                query += " ORDER BY numero"
+                cur.execute(query, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_stats():
+        """Retorna estatísticas gerais sobre bilhetes"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'Disponível' THEN 1 ELSE 0 END) as disponiveis,
+                        SUM(CASE WHEN status = 'Reservado' THEN 1 ELSE 0 END) as reservados,
+                        SUM(CASE WHEN status = 'Vendido' THEN 1 ELSE 0 END) as vendidos
+                    FROM Bilhetes
+                """)
+                result = cur.fetchone()
+                return {
+                    'total': result[0],
+                    'disponiveis': result[1],
+                    'disponiveis_pct': (result[1]/result[0])*100 if result[0] > 0 else 0,
+                    'reservados': result[2],
+                    'reservados_pct': (result[2]/result[0])*100 if result[0] > 0 else 0,
+                    'vendidos': result[3],
+                    'vendidos_pct': (result[3]/result[0])*100 if result[0] > 0 else 0
+                }
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_stats_by_type():
+        """Obtém estatísticas de bilhetes por tipo"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        tipo,
+                        COUNT(*) as quantidade,
+                        ROUND((COUNT(*) * 100.0 / (SELECT COUNT(*) FROM bilhetes)), 2) as percentual
+                    FROM bilhetes
+                    GROUP BY tipo
+                    ORDER BY quantidade DESC
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar estatísticas por tipo: {str(e)}")
+        finally:
+            conn.close()
+
+--- evento_model.py ---
+from services.db_service import DatabaseService
+
+class EventoModel:
+    @staticmethod
+    def create(**kwargs):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO Eventos 
+                    (Nome, Tipo, Divulgacao, Ticket, Premio, Trave, Resultado, Descricao, Concurso, Status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id""",
+                    (kwargs['nome'], kwargs['tipo'], kwargs['divulgacao'], kwargs['ticket'],
+                     kwargs['premio'], kwargs['trave'], kwargs.get('resultado'), 
+                     kwargs.get('descricao'), kwargs.get('concurso'), kwargs.get('status', 'Ativo'))
+                )
+                
+                evento_id = cur.fetchone()[0]
+                conn.commit()
+                return evento_id
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def update(evento_id, **kwargs):
+        """Atualiza um evento existente"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """
+                    UPDATE Eventos SET
+                        Nome = %s,
+                        Tipo = %s,
+                        Divulgacao = %s,
+                        Ticket = %s,
+                        Premio = %s,
+                        Trave = %s,
+                        Descricao = %s,
+                        Concurso = %s
+                    WHERE id = %s
+                """
+                params = (
+                    kwargs['nome'],
+                    kwargs['tipo'],
+                    kwargs['divulgacao'],
+                    kwargs['ticket'],
+                    kwargs['premio'],
+                    kwargs.get('trave'),
+                    kwargs.get('descricao'),
+                    kwargs.get('concurso'),
+                    evento_id
+                )
+                cur.execute(query, params)
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise e  # Apenas levanta a exceção para ser tratada no controller
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count():
+        """Conta o total de eventos cadastrados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM Eventos")
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count_by_status():
+        """Conta eventos agrupados por status"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT Status, COUNT(*) 
+                    FROM Eventos 
+                    GROUP BY Status
+                """)
+                return {row[0]: row[1] for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_all():
+        """Obtém todos os eventos com nomes de campos padronizados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        id,
+                        Nome as nome,
+                        Tipo as tipo,
+                        Divulgacao as data_divulgacao,
+                        Ticket as valor_ticket,
+                        Premio as valor_premio,
+                        Trave as valor_trave,
+                        Status as status
+                    FROM Eventos
+                    ORDER BY Nome
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar eventos: {str(e)}")
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_by_id(evento_id):
+        """Obtém um evento específico pelo ID"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, Nome as nome, Tipo, Divulgacao as data_divulgacao,
+                    Ticket as valor_ticket, Premio as valor_premio, Trave AS valor_trave, Status
+                    FROM Eventos
+                    WHERE id = %s
+                """, (evento_id,))
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else None
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_active_events():
+        """Obtém eventos ativos com nomes de campos padronizados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        id, 
+                        Nome AS nome,
+                        Tipo, 
+                        Divulgacao as data_divulgacao,
+                        Ticket AS valor_ticket,
+                        Premio AS valor_premio,
+                        Trave AS valor_trave,
+                        Status
+                    FROM Eventos 
+                    WHERE Status = 'Ativo'
+                    ORDER BY Nome
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar eventos ativos: {str(e)}")
+        finally:
+            conn.close()    
+
+
+    @staticmethod
+    def update_status(evento_id, novo_status):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE Eventos SET Status = %s WHERE id = %s",
+                    (novo_status, evento_id)
+                )
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+            
+            
+
+
+--- fixo_model.py ---
+from services.db_service import DatabaseService
+
+class FixoModel:
+    @staticmethod
+    def create(apelido, numero, grupo=None, status="Ativo"):
+        """Cria um novo jogo fixo no banco de dados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO Fixos 
+                    (apelido, numero, grupo, status) 
+                    VALUES (%s, %s, %s, %s) 
+                    RETURNING id""",
+                    (apelido, numero, grupo, status)
+                )
+                conn.commit()
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def update(fixo_id, **kwargs):
+        """Atualiza um jogo fixo"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = "UPDATE Fixos SET "
+                params = []
+                updates = []
+                
+                for key, value in kwargs.items():
+                    if value is not None:
+                        updates.append(f"{key} = %s")
+                        params.append(value)
+                
+                if not updates:
+                    raise ValueError("Nenhum campo para atualizar")
+                
+                query += ", ".join(updates) + " WHERE id = %s"
+                params.append(fixo_id)
+                
+                cur.execute(query, params)
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao atualizar jogo fixo: {str(e)}")
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def search(**filters):
+        """Busca jogos fixos com filtros"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT id, apelido, numero, grupo, status, data_registro 
+                        FROM Fixos WHERE 1=1"""
+                params = []
+                
+                # Filtros opcionais
+                if filters.get('apelido'):
+                    query += " AND apelido = %s"
+                    params.append(filters['apelido'])
+                if filters.get('status'):
+                    query += " AND status = %s"
+                    params.append(filters['status'])
+                if filters.get('grupo'):
+                    query += " AND grupo ILIKE %s"
+                    params.append(f"%{filters['grupo']}%")
+                if filters.get('numero'):
+                    query += " AND numero = %s"
+                    params.append(filters['numero'])
+                
+                query += " ORDER BY apelido, numero"
+                cur.execute(query, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def apply_to_event(evento_id, apelido=None, grupo=None):
+        """Aplica jogos fixos a um evento específico"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                # 1. Obter jogos fixos que correspondem aos filtros
+                query = """SELECT id, apelido, numero FROM Fixos 
+                        WHERE status = 'Ativo'"""
+                params = []
+                
+                if apelido:
+                    query += " AND apelido = %s"
+                    params.append(apelido)
+                if grupo:
+                    query += " AND grupo ILIKE %s"
+                    params.append(f"%{grupo}%")
+                    
+                query += " ORDER BY apelido, numero"
+                cur.execute(query, params)
+                fixos = cur.fetchall()
+                
+                applied = 0
+                skipped = 0
+                failed = 0
+                
+                # 2. Aplicar cada jogo ao evento
+                for fixo in fixos:
+                    try:
+                        # Verificar se já existe no evento
+                        cur.execute(
+                            """SELECT 1 FROM Jogos 
+                            WHERE evento_id = %s AND numero = %s""",
+                            (evento_id, fixo[2])
+                        )
+                        if cur.fetchone():
+                            skipped += 1
+                            continue
+                            
+                        # Criar registro na tabela Jogos
+                        cur.execute(
+                            """INSERT INTO Jogos 
+                            (evento_id, numero, status, apelido, data_reserva)
+                            VALUES (%s, %s, 'RESERVADO', %s, CURRENT_TIMESTAMP)""",
+                            (evento_id, fixo[2], fixo[1])
+                        )
+                        applied += 1
+                    except Exception:
+                        failed += 1
+                        
+                conn.commit()
+                return {
+                    'applied': applied,
+                    'skipped': skipped,
+                    'failed': failed
+                }
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao aplicar jogos ao evento: {str(e)}")
+        finally:
+            conn.close()
+
+    
+    @staticmethod
+    def get_all_active():
+        """Obtém todos os jogos fixos ativos"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, apelido, numero, grupo, status 
+                    FROM Fixos WHERE status = 'Ativo' 
+                    ORDER BY apelido, numero"""
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_by_id(fixo_id):
+        """Obtém um jogo fixo pelo ID"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, apelido, numero, grupo, status, data_registro 
+                    FROM Fixos WHERE id = %s""",
+                    (fixo_id,)
+                )
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_fixos_to_apply(apelido=None, grupo=None):
+        """Obtém jogos fixos para aplicar a eventos com filtros opcionais"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT id, apelido, numero FROM Fixos 
+                        WHERE status = 'Ativo'"""
+                params = []
+                
+                if apelido:
+                    query += " AND apelido = %s"
+                    params.append(apelido)
+                if grupo:
+                    query += " AND grupo ILIKE %s"
+                    params.append(f"%{grupo}%")
+                    
+                query += " ORDER BY apelido, numero"
+                cur.execute(query, params)
+                return cur.fetchall()
+        finally:
+            conn.close()
+
+    
+    @staticmethod
+    def batch_update_status(apelido=None, grupo=None, status='Ativo'):
+        """Atualiza status em lote com filtros"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = "UPDATE Fixos SET status = %s"
+                params = [status]
+                
+                conditions = []
+                if apelido:
+                    conditions.append("apelido = %s")
+                    params.append(apelido)
+                if grupo:
+                    conditions.append("grupo ILIKE %s")
+                    params.append(f"%{grupo}%")
+                    
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
+                    
+                cur.execute(query, params)
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao atualizar status em lote: {str(e)}")
+        finally:
+            conn.close()
+
+--- jogo_model.py ---
+from services.db_service import DatabaseService
+
+class JogoModel:
+    @staticmethod
+    def count():
+        """Conta total de jogos cadastrados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM Jogos")
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count_by_event(evento_id):
+        """Conta jogos de um evento específico"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM Jogos 
+                    WHERE evento_id = %s
+                """, (evento_id,))
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count_by_event_and_status(evento_id, status):
+        """Conta jogos por evento e status"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM Jogos 
+                    WHERE evento_id = %s AND status = %s
+                """, (evento_id, status))
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def total_amount_by_event(evento_id):
+        """Calcula valor total arrecadado por evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT SUM(e.Ticket)
+                    FROM Jogos j
+                    JOIN Eventos e ON j.evento_id = e.id
+                    WHERE j.evento_id = %s AND j.status = 'VENDIDO'
+                """, (evento_id,))
+                return float(cur.fetchone()[0] or 0)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def status_distribution(evento_id):
+        """Distribuição de status dos jogos por evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT status, COUNT(*) 
+                    FROM Jogos 
+                    WHERE evento_id = %s
+                    GROUP BY status
+                """, (evento_id,))
+                return {row[0]: row[1] for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+    @staticmethod
+    def top_users_by_event(evento_id, limit=5):
+        """Top apostadores por evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT j.apelido, a.Nome as nome, COUNT(*) as total_jogos
+                    FROM Jogos j
+                    JOIN Apostadores a ON j.apelido = a.Apelido
+                    WHERE j.evento_id = %s
+                    GROUP BY j.apelido, a.Nome
+                    ORDER BY total_jogos DESC
+                    LIMIT %s
+                """, (evento_id, limit))
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def count_by_user(apelido):
+        """Conta jogos de um apostador"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM Jogos 
+                    WHERE apelido = %s
+                """, (apelido,))
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_last_by_user(apelido, limit=10):
+        """Obtém últimos jogos de um apostador"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT j.numero, e.Nome as evento, j.status, j.data_venda
+                    FROM Jogos j
+                    JOIN Eventos e ON j.evento_id = e.id
+                    WHERE j.apelido = %s
+                    ORDER BY j.data_venda DESC
+                    LIMIT %s
+                """, (apelido, limit))
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def get_by_number(evento_id, numero):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, evento_id, numero, status, apelido, 
+                       data_reserva, data_venda 
+                       FROM Jogos 
+                       WHERE evento_id = %s AND numero = %s""",
+                    (evento_id, numero)
+                )
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else {'status': 'DISPONIVEL'}
+        finally:
+            conn.close()
+            
+    @staticmethod
+    def get_by_user(evento_id, apelido):
+        """Obtém todos os jogos de um usuário em um evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, numero, status, data_reserva, data_venda
+                    FROM Jogos
+                    WHERE evento_id = %s AND apelido = %s
+                    ORDER BY numero""",
+                    (evento_id, apelido)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_reserved_by_user(apelido):
+        """Obtém todos os jogos reservados por um apostador"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        j.id,
+                        j.numero,
+                        e.Nome as evento_nome,
+                        e.Ticket as valor,
+                        j.data_reserva
+                    FROM Jogos j
+                    JOIN Eventos e ON j.evento_id = e.id
+                    WHERE j.apelido = %s AND j.status = 'RESERVADO'
+                    ORDER BY e.Nome, j.numero
+                """, (apelido,))
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+            
+    
+    @staticmethod
+    def reserve_number(evento_id, numero, apelido):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO Jogos 
+                    (evento_id, numero, status, apelido, data_reserva)
+                    VALUES (%s, %s, 'RESERVADO', %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (evento_id, numero) 
+                    DO UPDATE SET status = 'RESERVADO', 
+                                apelido = EXCLUDED.apelido,
+                                data_reserva = CURRENT_TIMESTAMP
+                    RETURNING id""",
+                    (evento_id, numero, apelido)
+                )
+                conn.commit()
+                return cur.fetchone()[0]
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao reservar número: {str(e)}")
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def cancel_reservation(evento_id, numero):
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE Jogos 
+                    SET status = 'DISPONIVEL', 
+                        apelido = NULL,
+                        data_reserva = NULL
+                    WHERE evento_id = %s AND numero = %s
+                    RETURNING id""",
+                    (evento_id, numero)
+                )
+                conn.commit()
+                return cur.fetchone()[0] if cur.rowcount > 0 else None
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao cancelar reserva: {str(e)}")
+        finally:
+            conn.close()
+
+
+--- pagamento_model.py ---
+from services.db_service import DatabaseService
+
+class PagamentoModel:
+    @staticmethod
+    def create(numero, apelido, valor, metodo, observacoes, jogos):
+        """Registra um novo pagamento no banco de dados"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                # Insere o pagamento
+                cur.execute(
+                    """INSERT INTO Pagamentos 
+                    (numero, apelido, valor, metodo, observacoes) 
+                    VALUES (%s, %s, %s, %s, %s) 
+                    RETURNING id""",
+                    (numero, apelido, valor, metodo, observacoes)
+                )
+                payment_id = cur.fetchone()[0]
+                
+                # Atualiza o status dos jogos
+                for numero_jogo in jogos:
+                    cur.execute(
+                        """UPDATE Jogos 
+                        SET status = 'VENDIDO', 
+                            data_venda = CURRENT_TIMESTAMP 
+                        WHERE numero = %s""",
+                        (numero_jogo,)
+                    )
+                
+                conn.commit()
+                return payment_id
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def total_amount(start_date=None, end_date=None):
+        """Soma total de pagamentos no período"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = "SELECT SUM(valor) FROM Pagamentos WHERE 1=1"
+                params = []
+                
+                if start_date:
+                    query += " AND data_registro >= %s"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND data_registro <= %s"
+                    params.append(end_date)
+                
+                cur.execute(query, params)
+                return float(cur.fetchone()[0] or 0)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def sum_by_method(start_date=None, end_date=None):
+        """Soma pagamentos por método no período"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT metodo, SUM(valor) 
+                    FROM Pagamentos 
+                    WHERE 1=1
+                """
+                params = []
+                
+                if start_date:
+                    query += " AND data_registro >= %s"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND data_registro <= %s"
+                    params.append(end_date)
+                
+                query += " GROUP BY metodo"
+                cur.execute(query, params)
+                return {row[0]: float(row[1] or 0) for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+    @staticmethod
+    def total_amount_by_user(apelido):
+        """Soma total gasto por um apostador"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT SUM(valor)
+                    FROM Pagamentos
+                    WHERE Apelido = %s
+                """, (apelido,))
+                return float(cur.fetchone()[0] or 0)
+        finally:
+            conn.close()
+
+
+    @staticmethod    
+    def get_reserved_by_user(apelido):
+        """Obtém todos os jogos reservados por um usuário, com informações do evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT j.id, j.numero, j.evento_id, e.nome as evento_nome, 
+                    j.data_reserva, e.ticket as valor
+                    FROM Jogos j
+                    JOIN Eventos e ON j.evento_id = e.id
+                    WHERE j.apelido = %s AND j.status = 'RESERVADO'
+                    ORDER BY e.nome, j.numero""",
+                    (apelido,)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar jogos reservados: {str(e)}")
+        finally:
+            conn.close()
+
+--- relatorio_model.py ---
+from services.db_service import DatabaseService
+from controllers.bilhete_controller import BilheteController
+
+class RelatorioModel:
+    @staticmethod
+    def generate_custom_report(filters):
+        """Executa query complexa com base nos filtros"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                # Construir query dinâmica baseada nos filtros
+                query = """
+                    SELECT 
+                        e.nome as evento_nome,
+                        a.apelido as apostador_apelido,
+                        j.numero as jogo_numero,
+                        j.status as jogo_status,
+                        p.valor as pagamento_valor,
+                        p.metodo as pagamento_metodo
+                    FROM Jogos j
+                    LEFT JOIN Eventos e ON j.evento_id = e.id
+                    LEFT JOIN Apostadores a ON j.apelido = a.apelido
+                    LEFT JOIN Pagamentos p ON p.apelido = j.apelido
+                    WHERE 1=1
+                """
+                
+                params = []
+                
+                # Aplicar filtros dinamicamente
+                if filters.get('start_date'):
+                    query += " AND p.data >= %s"
+                    params.append(filters['start_date'])
+                
+                # ... outros filtros
+                
+                cur.execute(query, params)
+                return cur.fetchall()
+        finally:
+            conn.close()
+            
+
+    def generate_report_type():
+        try:
+            estatisticas =  BilheteController.get_stats_by_type()
+            
+            print("\nDistribuição por Tipo")
+            print(f"Total de bilhetes: {estatisticas['total']}")
+            print("\nQuantidade por tipo:")
+            for tipo, quantidade in estatisticas['por_tipo'].items():
+                print(f"- {tipo}: {quantidade}")
+                
+            return estatisticas
+        except Exception as e:
+            print(f"Erro ao gerar relatório: {str(e)}")
+            return None
+
+--- __init__.py ---
+# Package initialization
+
+
+=== VIEWS ===
+
+--- apostador_view.py ---
+import streamlit as st
+import time
+from services.auth_service import AuthService
+from controllers.apostador_controller import ApostadorController
+
+class ApostadorView:
+    @staticmethod
+    def show_form():
+        if not AuthService.check_permission('ASSISTENTE'):
+            st.error("Acesso não autorizado!")
+            return
+
+        opcao = st.radio("Operação:", ("Cadastrar", "Consultar", "Atualizar", "Desativar"), horizontal=True)
+        
+        if opcao == "Cadastrar":
+            ApostadorView._show_create_form()
+        elif opcao == "Consultar":
+            ApostadorView._show_search_form()
+        elif opcao == "Atualizar":
+            ApostadorView._show_update_form()
+        elif opcao == "Desativar":
+            ApostadorView._show_deactivate_form()
+
+   
+    @staticmethod
+    def _show_create_form():
+        form = st.form(key="form_cadastrar_apostador", clear_on_submit=True)  # Novo parâmetro aqui
+        with form:
+            st.subheader("Cadastrar Novo Apostador")
+            
+            col1, col2 = st.columns(2)
+            nome = col1.text_input("Nome Completo*", max_chars=100, key="nome")
+            apelido = col2.text_input("Apelido*", max_chars=50, key="apelido")
+            
+            col1, col2 = st.columns(2)
+            ddd = col1.text_input("DDD", max_chars=2, key="ddd")
+            telefone = col2.text_input("Telefone", max_chars=15, key="telefone")
+            
+            email = st.text_input("E-mail", max_chars=100, key="email")
+            endereco = st.text_area("Endereço", max_chars=200, key="endereco")
+            
+            submitted = form.form_submit_button("Cadastrar")
+            
+            if submitted:
+                try:
+                    if not nome or not apelido:
+                        st.error("Nome e apelido são obrigatórios!")
+                        st.stop()  # Impede a execução do resto do código
+                    
+                    # Cria um container para mensagens
+                    message_container = st.empty()
+                    
+                    ApostadorController.create(
+                        nome=nome,
+                        apelido=apelido,
+                        ddd=ddd if ddd else None,
+                        telefone=telefone if telefone else None,
+                        email=email if email else None,
+                        endereco=endereco if endereco else None
+                    )
+                    
+                    # Exibe mensagem de sucesso
+                    message_container.success("Apostador cadastrado com sucesso!")
+                    
+                    # Força atualização da página após 2 segundos
+                    time.sleep(2)
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Erro ao cadastrar apostador: {str(e)}")
+    
+
+    @staticmethod
+    def _show_search_form():
+        with st.form("form_consultar_apostador"):
+            st.subheader("Consultar Apostadores")
+            
+            col1, col2 = st.columns(2)
+            nome_filter = col1.text_input("Filtrar por nome")
+            apelido_filter = col2.text_input("Filtrar por apelido")
+            
+            status_filter = st.selectbox("Status", ["Todos", "Ativo", "Inativo"])
+            
+            if st.form_submit_button("Buscar"):
+                try:
+                    apostadores = ApostadorController.search(
+                        nome=nome_filter if nome_filter else None,
+                        apelido=apelido_filter if apelido_filter else None,
+                        status=status_filter if status_filter != "Todos" else None
+                    )
+                    
+                    if apostadores:
+                        st.dataframe(
+                            apostadores,
+                            column_config={
+                                "Nome": "Nome",
+                                "Apelido": "Apelido",
+                                "Telefone": "Telefone",
+                                "Status": "Status"
+                            },
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("Nenhum apostador encontrado com os filtros selecionados.")
+                except Exception as e:
+                    st.error(f"Erro ao buscar apostadores: {str(e)}")
+
+
+    @staticmethod
+    def _show_update_form():
+        try:
+            st.subheader("Atualizar Apostador")
+            
+            # Buscar apostadores ativos (agora em minúsculo)
+            apostadores = ApostadorController.search(status='Ativo')
+            if not apostadores:
+                st.warning("Nenhum apostador ativo encontrado!")
+                return
+                
+            # Criar opções para o selectbox
+            opcoes = {f"{a['apelido']} ({a['nome']})": a for a in apostadores}
+            
+            selecao = st.selectbox(
+                "Selecione o apostador para editar:",
+                options=list(opcoes.keys())
+            )
+            
+            apostador = opcoes[selecao]
+            
+            with st.form("form_atualizar_apostador"):
+                col1, col2 = st.columns(2)
+                nome = col1.text_input("Nome Completo*", 
+                                    value=apostador['nome'])
+                apelido = col2.text_input("Apelido*", 
+                                        value=apostador['apelido'],
+                                        disabled=True)
+                
+                col1, col2 = st.columns(2)
+                ddd = col1.text_input("DDD", 
+                                    value=apostador.get('ddd', ''))
+                telefone = col2.text_input("Telefone", 
+                                        value=apostador.get('telefone', ''))
+                
+                email = st.text_input("E-mail", 
+                                    value=apostador.get('email', ''))
+                endereco = st.text_area("Endereço", 
+                                    value=apostador.get('endereco', ''))
+                
+                if st.form_submit_button("Atualizar"):
+                    try:
+                        if not nome:
+                            st.error("Nome é obrigatório!")
+                            return
+                        
+                        ApostadorController.update(
+                            apelido=apostador['apelido'],
+                            nome=nome,
+                            ddd=ddd if ddd else None,
+                            telefone=telefone if telefone else None,
+                            email=email if email else None,
+                            endereco=endereco if endereco else None
+                        )
+                        st.success("Apostador atualizado com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao atualizar: {str(e)}")
+                        
+        except Exception as e:
+            st.error(f"Erro ao carregar formulário: {str(e)}")
+      
+
+    @staticmethod
+    def _show_deactivate_form():
+        try:
+            with st.form(key="show_deactivate_form"):
+                st.subheader("Desativar Apostador")
+            
+                # Buscar apenas apostadores ativos
+                apostadores = ApostadorController.search(status='Ativo')
+                if not apostadores:
+                    st.warning("Nenhum apostador ativo disponível!")
+                    return
+                    
+                # Criar opções para o selectbox no formato "Apelido (Nome)"
+                opcoes = {f"{a['apelido']} ({a['nome']})": a['apelido'] for a in apostadores}
+                
+                selecao = st.selectbox(
+                    "Selecione o apostador para desativar:",
+                    options=list(opcoes.keys())
+                )
+                
+                # Obter o apelido real sem o nome entre parênteses
+                apelido_desativar = opcoes[selecao]
+                
+                submitted = st.form_submit_button("Confirmar Desativação", type="primary")
+                
+                if submitted:
+                    try:
+                        resultado = ApostadorController.deactivate(apelido_desativar)
+                        if resultado > 0:
+                            st.success(f"Apostador {apelido_desativar} desativado com sucesso!")
+                            st.rerun()
+                        else:
+                            st.error("Nenhum apostador foi desativado. Verifique se o apelido existe.")
+                    except Exception as e:
+                        st.error(f"Erro ao desativar apostador: {str(e)}")
+                    
+        except Exception as e:
+            st.error(f"Erro ao carregar formulário: {str(e)}")
+
+--- bilhete_view.py ---
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
+from controllers.bilhete_controller import BilheteController
+
+class BilheteView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de bilhetes"""
+        st.header("🎟️ Gerenciamento de Bilhetes")
+        
+        tab1, tab2, tab3 = st.tabs(["Cadastrar Bilhetes", "Consultar Bilhetes", "Relatório de Bilhetes"])
+        
+        with tab1:
+            BilheteView._show_create_form()
+        with tab2:
+            BilheteView._show_search_form()
+        with tab3:
+            BilheteView._show_report()
+
+
+    @staticmethod
+    def _show_report():
+        """Exibe o relatório de bilhetes"""
+        try:
+            st.subheader("Relatório de Bilhetes por Tipo")
+            
+            stats = BilheteController.get_stats_by_type()
+            
+            if not stats['detalhes']:
+                st.warning("Nenhum dado disponível para gerar o relatório")
+                return
+            
+            # Criar DataFrame com as colunas corretas
+            df = pd.DataFrame(stats['detalhes'])
+            
+            # Verificar se as colunas esperadas existem
+            required_columns = ['tipo', 'quantidade', 'percentual']
+            if not all(col in df.columns for col in required_columns):
+                missing = [col for col in required_columns if col not in df.columns]
+                raise ValueError(f"Colunas faltando: {', '.join(missing)}")
+            
+            # Exibir métricas
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total de Bilhetes", stats['total'])
+            col2.metric("Tipos Diferentes", len(stats['por_tipo']))
+            col3.metric("Mais Comum", f"{max(stats['por_tipo'].items(), key=lambda x: x[1])[0]}")
+            
+            # Exibir tabela
+            st.dataframe(
+                df,
+                column_config={
+                    "tipo": "Tipo",
+                    "quantidade": st.column_config.NumberColumn("Quantidade", format="%d"),
+                    "percentual": st.column_config.NumberColumn("Percentual", format="%.2f%%")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Gráfico de pizza
+            fig = px.pie(df, names='tipo', values='quantidade', title='Distribuição por Tipo')
+            st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+
+    @staticmethod
+    def _show_create_form():
+        """Formulário de criação de bilhetes"""
+        with st.form("form_cadastrar_bilhete"):
+            st.subheader("Cadastrar Novo Bilhete")
+            
+            col1, col2 = st.columns(2)
+            numero = col1.text_input("Número do Bilhete*", max_chars=20)
+            tipo = col2.selectbox("Tipo", ["Físico", "Digital"], index=0)
+            
+            col1, col2 = st.columns(2)
+            lote = col1.text_input("Lote/Sequência", max_chars=10)
+            status = col2.selectbox("Status", ["Disponível", "Reservado", "Vendido", "Cancelado"], index=0)
+            
+            observacoes = st.text_area("Observações")
+            
+            if st.form_submit_button("Cadastrar Bilhete"):
+                try:
+                    if not numero:
+                        st.warning("Número do bilhete é obrigatório!")
+                        return
+                    
+                    bilhete_id = BilheteController.create(
+                        numero=numero,
+                        tipo=tipo,
+                        lote=lote,
+                        status=status,
+                        observacoes=observacoes
+                    )
+                    st.success(f"Bilhete {numero} cadastrado com sucesso! ID: {bilhete_id}")
+                except Exception as e:
+                    st.error(f"Erro ao cadastrar bilhete: {str(e)}")
+
+    @staticmethod
+    def _show_search_form():
+        """Formulário de consulta de bilhetes"""
+        # Primeiro criamos o formulário de filtros
+        with st.form(key="form_filtrar_bilhetes"):
+            st.subheader("Filtrar Bilhetes")
+            
+            col1, col2, col3 = st.columns(3)
+            numero_filter = col1.text_input("Número do Bilhete")
+            tipo_filter = col2.selectbox("Tipo", ["Todos"] + ["Físico", "Digital"])
+            status_filter = col3.selectbox("Status", ["Todos"] + ["Disponível", "Reservado", "Vendido"])
+            
+            col1, col2 = st.columns(2)
+            lote_filter = col1.text_input("Filtrar por Lote")
+            date_filter = col2.date_input("Filtrar por Data")
+            
+            # Botão de submit para aplicar filtros
+            submitted = st.form_submit_button("Aplicar Filtros")
+        
+        # A lista de resultados e o download ficam FORA do formulário
+        if submitted or 'bilhetes_filtrados' in st.session_state:
+            try:
+                # Busca os bilhetes com os filtros aplicados
+                bilhetes = BilheteController.search(
+                    numero=numero_filter if numero_filter else None,
+                    tipo=tipo_filter if tipo_filter != "Todos" else None,
+                    status=status_filter if status_filter != "Todos" else None,
+                    lote=lote_filter if lote_filter else None,
+                    data_inicio=date_filter if date_filter else None
+                )
+                
+                if bilhetes:
+                    # Armazena na sessão para o download
+                    st.session_state.bilhetes_filtrados = bilhetes
+                    
+                    # Exibe a tabela
+                    df = pd.DataFrame(bilhetes)
+                    st.dataframe(
+                        df,
+                        column_config={
+                            "numero": "Número",
+                            "tipo": "Tipo",
+                            "status": "Status",
+                            "lote": "Lote",
+                            "data_cadastro": "Data Cadastro"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Botão de download FORA do formulário
+                    if st.button("📥 Exportar para CSV"):
+                        csv = df.to_csv(index=False, sep=';').encode('utf-8')
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv,
+                            file_name=f"bilhetes_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.info("Nenhum bilhete encontrado com os filtros selecionados.")
+                    
+            except Exception as e:
+                st.error(f"Erro ao buscar bilhetes: {str(e)}")
+        
+
+    @staticmethod
+    def show_bilhete_select(label="Selecione um bilhete:", filters=None):
+        """Componente para seleção de bilhete (reutilizável)"""
+        try:
+            bilhetes = BilheteController.get_available(filters)
+            
+            if not bilhetes:
+                st.warning("Nenhum bilhete disponível encontrado!")
+                return None
+                
+            options = {f"{b['numero']} ({b['tipo']})": b['id'] for b in bilhetes}
+            selected = st.selectbox(label, options.keys())
+            return options[selected]
+        except Exception as e:
+            st.error(f"Erro ao carregar bilhetes: {str(e)}")
+            return None
+
+--- evento_view.py ---
+import streamlit as st
+import time
+from datetime import datetime
+from controllers.evento_controller import EventoController
+
+class EventoView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de eventos"""
+        st.header("🗓️ Gerenciamento de Eventos")
+        
+        opcao = st.radio(
+            "Selecione a operação:",
+            ("Cadastrar", "Consultar", "Atualizar", "Alterar Status"),
+            horizontal=True
+        )
+
+        if opcao == "Cadastrar":
+            EventoView._show_create_form()
+        elif opcao == "Consultar":
+            EventoView._show_search_form()
+        elif opcao == "Atualizar":
+            EventoView._show_update_form()
+        elif opcao == "Alterar Status":
+            EventoView._show_status_form()
+
+    @staticmethod
+    def _show_create_form():
+        """Formulário de criação de evento"""
+        with st.form("form_cadastrar_evento", clear_on_submit=True):
+            st.subheader("Cadastrar Novo Evento")
+            
+            col1, col2 = st.columns(2)
+            nome = col1.text_input("Nome do Evento*", key="evento_nome")
+            tipo = col2.selectbox("Tipo*", ["Esportivo", "Cultural", "Sorteio", "Outro"], key="evento_tipo")
+
+            divulgacao = st.date_input("Data de Divulgação*", min_value=datetime.today(), key="evento_divulgacao")
+            
+            col1, col2, col3 = st.columns(3)
+            ticket = col1.number_input("Valor do Ticket (R$)*", min_value=0.0, format="%.2f", key="evento_ticket")
+            premio = col2.number_input("Prêmio (R$)*", min_value=0.0, format="%.2f", key="evento_premio")
+            trave = col3.number_input("Trave (R$)*", min_value=0.0, format="%.2f", key="evento_trave")
+
+            descricao = st.text_area("Descrição", key="evento_descricao")
+            concurso = st.text_input("Concurso", key="evento_concurso")
+            
+            submitted = st.form_submit_button("Cadastrar")
+            
+            if submitted:
+                try:
+                    if not nome or not tipo or not divulgacao or ticket <= 0 or premio <= 0:
+                        st.error("Campos marcados com * são obrigatórios!")
+                        return
+                    
+                    evento_id = EventoController.create(
+                        nome=nome,
+                        tipo=tipo,
+                        divulgacao=divulgacao,
+                        ticket=ticket,
+                        premio=premio,
+                        trave=trave,
+                        descricao=descricao if descricao else None,
+                        concurso=concurso if concurso else None
+                    )
+                    st.success(f"Evento cadastrado com sucesso! ID: {evento_id}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao criar evento: {str(e)}")
+
+    @staticmethod
+    def _show_search_form():
+        """Formulário de consulta de eventos"""
+        st.subheader("Consultar Eventos")
+        
+        filtro = st.text_input("Filtrar por nome ou tipo:")
+        
+        try:
+            eventos = EventoController.get_all(filtro if filtro else None)
+            
+            if eventos:
+                st.dataframe(
+                    eventos,
+                    column_config={
+                        "divulgacao": "Data Divulgação",
+                        "ticket": st.column_config.NumberColumn("Ticket", format="R$ %.2f"),
+                        "premio": st.column_config.NumberColumn("Prêmio", format="R$ %.2f"),
+                        "trave": st.column_config.NumberColumn("Trave", format="R$ %.2f")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Nenhum evento encontrado.")
+        except Exception as e:
+            st.error(f"Erro ao buscar eventos: {str(e)}")
+            
+    @staticmethod
+    def _show_update_form():
+        """Formulário de atualização de eventos"""
+        eventos = EventoController.get_all()
+        if not eventos:
+            st.warning("Nenhum evento cadastrado!")
+            return
+
+        # Seleção do evento
+        evento_opcoes = {f"{e['nome']} (ID: {e['id']})": e['id'] for e in eventos}
+        selected = st.selectbox("Selecione o evento para editar:", options=list(evento_opcoes.keys()))
+        
+        with st.form(key="form_atualizar_evento", clear_on_submit=False):
+            evento = EventoController.get_by_id(evento_opcoes[selected])
+            
+            # Campos do formulário
+            nome = st.text_input("Nome do Evento*", value=evento['nome'])
+            tipo = st.selectbox("Tipo*", 
+                            options=["Esportivo", "Cultural", "Sorteio", "Outro"],
+                            index=["Esportivo", "Cultural", "Sorteio", "Outro"].index(evento['tipo']))
+            
+            divulgacao = st.date_input("Data de Divulgação*", 
+                                    value=evento['data_divulgacao'] if 'data_divulgacao' in evento else datetime.now())
+            
+            col1, col2, col3 = st.columns(3)
+            ticket = col1.number_input("Valor do Ticket (R$)*", 
+                                    value=float(evento['valor_ticket']), 
+                                    min_value=0.0, 
+                                    format="%.2f")
+            premio = col2.number_input("Valor do Prêmio (R$)*", 
+                                    value=float(evento['valor_premio']), 
+                                    min_value=0.0, 
+                                    format="%.2f")
+            trave = col3.number_input("Valor da Trave (R$)*", 
+                                    value=float(evento.get('valor_trave', 0)), 
+                                    min_value=0.0, 
+                                    format="%.2f")
+            
+            descricao = st.text_area("Descrição", value=evento.get('descricao', ''))
+            concurso = st.text_input("Concurso", value=evento.get('concurso', ''))
+            
+            submitted = st.form_submit_button("Atualizar Evento")
+            
+            if submitted:
+                try:
+                    if not nome or not divulgacao or ticket <= 0 or premio <= 0 or trave <= 0:
+                        st.error("Preencha todos os campos obrigatórios!")
+                    else:
+                        EventoController.update(
+                            evento_id=evento['id'],
+                            nome=nome,
+                            tipo=tipo,
+                            divulgacao=divulgacao,
+                            ticket=ticket,
+                            premio=premio,
+                            trave=trave,
+                            descricao=descricao if descricao else None,
+                            concurso=concurso if concurso else None
+                        )
+                        st.success("Evento atualizado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar evento: {str(e)}")
+
+
+    @staticmethod
+    def _show_status_form():
+        """Formulário para alterar status do evento"""
+        try:
+            eventos = EventoController.get_all()
+            
+            if not eventos:
+                st.warning("Nenhum evento cadastrado!")
+                return
+                
+            evento_options = {f"{e['nome']} (Status: {e['status']})": e['id'] for e in eventos}
+            evento_selecionado = st.selectbox("Selecione o evento:", list(evento_options.keys()))
+            evento_id = evento_options[evento_selecionado]
+            
+            evento = EventoController.get_by_id(evento_id)
+            
+            with st.form("form_alterar_evento"):         
+                if evento:
+                    novo_status = st.selectbox(
+                        "Novo status",
+                        ["Ativo", "Cancelado", "Concluído"],
+                        index=["Ativo", "Cancelado", "Concluído"].index(evento['status'])
+                    )
+                    
+                    submitted = st.form_submit_button("Alterar Status")
+                    
+                    if submitted:
+                        try:
+                            EventoController.update_status(evento_id, novo_status)
+                            st.success(f"Status atualizado para '{novo_status}'!")
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar status: {str(e)}")
+                else:
+                    st.error("Evento não encontrado!")
+        except Exception as e:
+            st.error(f"Erro ao carregar eventos: {str(e)}")
+
+@staticmethod
+def show_evento_select(label="Selecione o evento:"):
+    """Componente para selecionar evento (usado em outros formulários)"""
+    try:
+        eventos = EventoController.get_active_events()
+        
+        if not eventos:
+            st.warning("Nenhum evento ativo disponível!")
+            return None
+            
+        evento_options = {
+                            f"{e['nome']} (ID: {e['id']}) - {e['data_divulgacao'].strftime('%d/%m/%Y')}": e['id'] 
+                            for e in eventos
+                         }
+ 
+        evento_selecionado = st.selectbox(label, list(evento_options.keys()))
+        return evento_options[evento_selecionado]
+    except Exception as e:
+        st.error(f"Erro ao carregar eventos: {str(e)}")
+        return None
+
+--- fixo_view.py ---
+import streamlit as st
+import pandas as pd
+import time
+from datetime import datetime
+from controllers.apostador_controller import ApostadorController 
+from controllers.evento_controller import EventoController
+from controllers.fixo_controller import FixoController
+
+class FixoView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de jogos fixos"""
+        st.header("🎯 Jogos Fixos")
+        
+        opcao = st.radio(
+            "Selecione a operação:",
+            ("Cadastrar", "Consultar", "Atualizar", "Gerenciar"),
+            horizontal=True,
+            index=0
+        )
+        
+        if opcao == "Cadastrar":
+            FixoView._show_create_form()
+        elif opcao == "Consultar":
+            FixoView._show_search_form()
+        elif opcao == "Atualizar":
+            FixoView._show_update_form()
+        elif opcao == "Gerenciar":
+            FixoView._show_manage_form()
+
+
+    @staticmethod
+    def _show_create_form():
+        """Formulário de cadastro de jogos fixos"""
+        with st.form("form_cadastrar_fixo", clear_on_submit=True):  # Adicione clear_on_submit aqui
+            st.subheader("Cadastrar Novo Jogo Fixo")
+            
+            # Selecionar apostador
+            apostadores = ApostadorController.get_all_active()
+            apelido = st.selectbox(
+                "Apostador*",
+                options=[a['apelido'] for a in apostadores],
+                format_func=lambda x: f"{x} ({next(a['nome'] for a in apostadores if a['apelido'] == x)})"
+            )
+            
+            # Selecionar números
+            numeros = st.text_area(
+                "Números* (separados por vírgula ou linha)",
+                help="Digite os números de 0 a 999, separados por vírgula ou uma por linha"
+            )
+            
+            # Informações adicionais
+            col1, col2 = st.columns(2)
+            grupo = col1.text_input("Grupo/Observação", max_chars=50)
+            status = col2.selectbox("Status", ["Ativo", "Inativo"], index=0)
+            
+            if st.form_submit_button("Cadastrar Jogo Fixo"):
+                try:
+                    if not numeros or not apelido:
+                        st.warning("Apostador e números são obrigatórios!")
+                        return
+                    
+                    # Processa os números
+                    numeros_list = FixoView._process_numbers(numeros)
+                    if not numeros_list:
+                        st.warning("Nenhum número válido encontrado!")
+                        return
+                    
+                    # Cadastra cada número
+                    resultados = []
+                    for numero in numeros_list:
+                        try:
+                            fixo_id = FixoController.create(
+                                apelido=apelido,
+                                numero=numero,
+                                grupo=grupo,
+                                status=status
+                            )
+                            resultados.append(f"✅ {numero}: cadastrado (ID: {fixo_id})")
+                        except Exception as e:
+                            resultados.append(f"❌ {numero}: erro ({str(e)})")
+                    
+                    st.success("Processamento concluído:")
+                    for resultado in resultados:
+                        st.write(resultado)
+                    
+                    # Substituir st.experimental_rerun() por st.rerun()
+                    time.sleep(2)  # Pequeno delay para o usuário ver a mensagem
+                    st.rerun()  # Esta é a linha corrigida
+                    
+                except Exception as e:
+                    st.error(f"Erro ao cadastrar jogos fixos: {str(e)}")
+
+
+
+    @staticmethod
+    def _show_search_form():
+        """Formulário de consulta de jogos fixos"""
+        st.subheader("Consultar Jogos Fixos")
+        
+        with st.expander("🔍 Filtros Avançados", expanded=False):
+            col1, col2 = st.columns(2)
+            apelido_filter = col1.selectbox(
+                "Filtrar por apostador",
+                ["Todos"] + [a['apelido'] for a in ApostadorController.get_all_active()],
+                index=0
+            )
+            status_filter = col2.selectbox(
+                "Filtrar por status",
+                ["Todos", "Ativo", "Inativo"],
+                index=0
+            )
+            
+            col1, col2 = st.columns(2)
+            grupo_filter = col1.text_input("Filtrar por grupo")
+            numero_filter = col2.text_input("Filtrar por número")
+        
+        try:
+            jogos = FixoController.search(
+                apelido=apelido_filter if apelido_filter != "Todos" else None,
+                status=status_filter if status_filter != "Todos" else None,
+                grupo=grupo_filter if grupo_filter else None,
+                numero=numero_filter if numero_filter else None
+            )
+            
+            if jogos:
+                # Transforma em DataFrame para melhor visualização
+                df = pd.DataFrame(jogos)
+                df['data_registro'] = pd.to_datetime(df['data_registro']).dt.strftime('%d/%m/%Y %H:%M')
+                
+                st.dataframe(
+                    df[['id', 'apelido', 'numero', 'grupo', 'status', 'data_registro']],
+                    column_config={
+                        "id": "ID",
+                        "apelido": "Apostador",
+                        "numero": "Número",
+                        "grupo": "Grupo",
+                        "status": "Status",
+                        "data_registro": "Data Registro"
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Opções de exportação
+                csv = df.to_csv(index=False, sep=';').encode('utf-8')
+                st.download_button(
+                    label="📥 Exportar para CSV",
+                    data=csv,
+                    file_name=f"jogos_fixos_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhum jogo fixo encontrado com os filtros selecionados.")
+                
+        except Exception as e:
+            st.error(f"Erro ao buscar jogos fixos: {str(e)}")
+
+
+    @staticmethod
+    def _show_update_form():
+        """Formulário de atualização de jogo fixo"""
+        st.subheader("Atualizar Jogo Fixo")
+        
+        try:
+            # Buscar todos os jogos fixos
+            jogos = FixoController.search()
+            
+            if not jogos:
+                st.warning("Nenhum jogo fixo cadastrado!")
+                return
+                
+            # Criar opções para o selectbox
+            jogo_options = {
+                f"ID: {j['id']} - {j['apelido']} ({j['numero']})": j['id']
+                for j in jogos
+            }
+            
+            jogo_selecionado = st.selectbox(
+                "Selecione o jogo para editar:",
+                options=list(jogo_options.keys())
+            )
+            jogo_id = jogo_options[jogo_selecionado]
+            
+            # Carrega os dados do jogo selecionado
+            jogo = FixoController.get_by_id(jogo_id)
+            if not jogo:
+                st.error("Jogo não encontrado!")
+                return
+            
+            with st.form("form_atualizar_fixo"):
+                # Selecionar apostador
+                apostadores = ApostadorController.get_all_active()
+                apelido = st.selectbox(
+                    "Apostador*",
+                    options=[a['apelido'] for a in apostadores],
+                    index=[a['apelido'] for a in apostadores].index(jogo['apelido'])
+                )
+                
+                # Número (não editável)
+                st.text_input("Número", value=jogo['numero'], disabled=True)
+                
+                # Informações adicionais
+                col1, col2 = st.columns(2)
+                grupo = col1.text_input("Grupo/Observação", value=jogo.get('grupo', ''))
+                status = col2.selectbox(
+                    "Status",
+                    ["Ativo", "Inativo"],
+                    index=0 if jogo.get('status') == "Ativo" else 1
+                )
+                
+                if st.form_submit_button("Atualizar Jogo"):
+                    try:
+                        # Corrigindo a chamada do método update
+                        resultado = FixoController.update(
+                            fixo_id=jogo_id,  # Adicionando o parâmetro fixo_id
+                            apelido=apelido,
+                            grupo=grupo,
+                            status=status
+                        )
+                        
+                        if resultado > 0:
+                            st.success("Jogo fixo atualizado com sucesso!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.warning("Nenhum dado foi atualizado.")
+                    except Exception as e:
+                        st.error(f"Erro ao atualizar jogo: {str(e)}")
+                        
+        except Exception as e:
+            st.error(f"Erro ao carregar jogos fixos: {str(e)}")
+
+
+
+    @staticmethod
+    def _show_manage_form():
+        """Formulário para gerenciamento em lote"""
+        st.subheader("Gerenciamento em Lote")
+        
+        tab1, tab2 = st.tabs(["Ativar/Desativar", "Aplicar a Evento"])
+        
+        with tab1:
+            FixoView._show_batch_status_form()
+        with tab2:
+            FixoView._show_apply_to_event_form()
+
+
+    @staticmethod
+    def _show_apply_to_event_form():
+        """Formulário para aplicar jogos fixos a eventos"""
+        with st.form(key="form_aplicar_evento"):
+            st.subheader("Aplicar Jogos Fixos a Evento")
+            
+            try:
+                # Obter eventos ativos
+                eventos = EventoController.get_active_events()
+                if not eventos:
+                    st.warning("Nenhum evento ativo disponível!")
+                    return
+                    
+                # Seleção de evento
+                evento_opcoes = {e['nome']: e['id'] for e in eventos}
+                evento_selecionado = st.selectbox(
+                    "Selecione o evento:",
+                    options=list(evento_opcoes.keys())
+                )
+                evento_id = evento_opcoes[evento_selecionado]
+                
+                # Filtros
+                col1, col2 = st.columns(2)
+                with col1:
+                    apostadores = ApostadorController.get_all_active()
+                    apelido = st.selectbox(
+                        "Filtrar por apostador:",
+                        ["Todos"] + [a['apelido'] for a in apostadores]
+                    )
+                with col2:
+                    grupo = st.text_input("Filtrar por grupo (opcional):")
+                
+                submitted = st.form_submit_button("Aplicar Jogos ao Evento")
+                
+                # Botão de envio
+                if submitted:
+                    try:
+                        with st.spinner("Aplicando jogos..."):
+                            result = FixoController.apply_to_event(
+                                evento_id=evento_id,
+                                apelido=apelido if apelido != "Todos" else None,
+                                grupo=grupo if grupo else None
+                            )
+                        
+                        st.success(f"""
+                            Resultado:
+                            ✅ {result['applied']} aplicados | 
+                            ⏭️ {result['skipped']} já existiam | 
+                            ❌ {result['failed']} falhas
+                        """)
+                        time.sleep(2)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Erro: {str(e)}")
+            
+            except Exception as e:
+                st.error(f"Erro ao carregar dados: {str(e)}")
+
+
+    @staticmethod
+    def _show_batch_status_form():
+        """Formulário para alterar status em lote"""
+        with st.form("form_status_lote"):
+            st.markdown("**Alterar status em lote**")
+            
+            # Filtros para seleção
+            col1, col2 = st.columns(2)
+            apelido_filter = col1.selectbox(
+                "Apostador",
+                ["Todos"] + [a['apelido'] for a in ApostadorController.get_all_active()],
+                key="batch_apelido"
+            )
+            grupo_filter = col2.text_input("Grupo", key="batch_grupo")
+            
+            # Novo status
+            novo_status = st.selectbox(
+                "Novo status",
+                ["Ativo", "Inativo"],
+                index=0
+            )
+            
+            submitted = st.form_submit_button("Aplicar Status em Lote")
+            
+            if submitted:
+                try:
+                    affected = FixoController.batch_update_status(
+                        apelido=apelido_filter if apelido_filter != "Todos" else None,
+                        grupo=grupo_filter if grupo_filter else None,
+                        status=novo_status
+                    )
+                    st.success(f"Status de {affected} jogos atualizados para '{novo_status}'!")
+                    time.sleep(1)  # Pequeno delay para o usuário ver a mensagem
+                    st.rerun()  # Substituição do st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar status: {str(e)}")
+                        
+                    
+    @staticmethod
+    def _process_numbers(input_text):
+        """Processa o texto de entrada para extrair números válidos"""
+        numbers = []
+        # Remove espaços e divide por vírgulas ou quebras de linha
+        for part in input_text.replace('\n', ',').split(','):
+            part = part.strip()
+            if part:
+                try:
+                    num = int(part)
+                    if 0 <= num <= 999:
+                        numbers.append(f"{num:03d}")
+                    else:
+                        st.warning(f"Número {num} fora do intervalo (0-999), ignorado")
+                except ValueError:
+                    st.warning(f"Valor '{part}' não é um número válido, ignorado")
+        return numbers
+
+--- jogo_view.py ---
+import streamlit as st
+import pandas as pd
+import time
+from services.db_service import DatabaseService
+from controllers.apostador_controller import ApostadorController
+from controllers.evento_controller import EventoController
+from controllers.jogo_controller import JogoController
+from views.evento_view import EventoView
+
+class JogoView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de jogos"""
+        st.header("🎫 Controle de Jogos")
+        
+        # Verificar se usuário está logado
+        user = st.session_state.get('user')
+        if not user or not user.get('apelido'):
+            st.error("Você precisa estar logado para acessar esta página!")
+            return
+            
+        tab1, tab2 = st.tabs(["Selecionar Números", "Meus Jogos"])
+        
+        with tab1:
+            JogoView._show_number_selection(user['apelido'])
+        with tab2:
+            JogoView._show_user_games(user['apelido'])
+
+
+    @staticmethod
+    def _show_update_form():
+        """Formulário de atualização de jogos"""
+        with st.form(key="form_atualizar_jogo", clear_on_submit=True):
+            st.subheader("Atualizar Jogo")
+            
+            # 1. Seleção do evento
+            evento_id = EventoView.show_evento_select("Selecione o evento:")
+            if not evento_id:
+                return
+                
+            # 2. Seleção do número
+            numero = st.text_input("Número do Jogo (000-999)*", max_length=3)
+            
+            # 3. Novo status
+            novo_status = st.selectbox(
+                "Novo Status",
+                ["DISPONIVEL", "RESERVADO", "VENDIDO"],
+                index=0
+            )
+            
+            # 4. Apostador (se for reserva/venda)
+            apelido = None
+            if novo_status in ["RESERVADO", "VENDIDO"]:
+                apostadores = ApostadorController.get_all_active()
+                apelido = st.selectbox(
+                    "Apostador*",
+                    options=[a['apelido'] for a in apostadores]
+                )
+            
+            submitted = st.form_submit_button("Atualizar Status")
+            
+            if submitted:
+                try:
+                    if not numero:
+                        st.error("Número do jogo é obrigatório!")
+                        return
+                        
+                    if novo_status in ["RESERVADO", "VENDIDO"] and not apelido:
+                        st.error("Apostador é obrigatório para este status!")
+                        return
+                    
+                    # Lógica de atualização
+                    JogoController.update_status(
+                        evento_id=evento_id,
+                        numero=numero.zfill(3),  # Garante 3 dígitos
+                        status=novo_status,
+                        apelido=apelido
+                    )
+                    
+                    st.success(f"Jogo {numero} atualizado para {novo_status}!")
+                    time.sleep(1)
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Erro ao atualizar jogo: {str(e)}")
+
+
+    @staticmethod
+    def _show_number_selection(user_apelido):
+        """Interface para seleção de números"""
+        try:
+            evento_id = EventoController.get_active_event_id()
+            if not evento_id:
+                st.warning("Nenhum evento ativo disponível no momento!")
+                return
+            
+            evento = EventoController.get_by_id(evento_id)
+            st.subheader(f"Evento: {evento['nome']}")
+            st.markdown("🟦 Disponível | 🟨 Reservado (por você) | 🟥 Vendido/Reservado por outros")
+            
+            # Grid 25x40 (1000 números)
+            cols = st.columns(25)
+            for i in range(1000):
+                num_str = f"{i:03d}"
+                with cols[i % 25]:
+                    JogoView._render_number_cell(num_str, evento_id, user_apelido)
+                
+                # Nova linha a cada 25 números
+                if (i + 1) % 25 == 0 and i < 999:
+                    cols = st.columns(25)
+                    
+        except Exception as e:
+            st.error(f"Erro ao carregar números: {str(e)}")
+
+
+    @staticmethod
+    def _show_user_games(user_apelido):
+        """Mostra os jogos do usuário logado"""
+        try:
+            with st.form("form_jogos_selecionados"):
+                st.subheader("Meus Jogos Reservados")
+                
+                # Obter eventos ativos primeiro
+                eventos_ativos = EventoController.get_all(status='Ativo')
+                if not eventos_ativos:
+                    st.info("Nenhum evento ativo no momento")
+                    return
+                    
+                # Obter jogos do usuário
+                jogos = []
+                for evento in eventos_ativos:
+                    jogos_evento = JogoController.get_user_games(evento['id'], user_apelido)
+                    for jogo in jogos_evento:
+                        jogo['evento_nome'] = evento['nome']
+                        jogos.append(jogo)
+                
+                if jogos:
+                    df = pd.DataFrame(jogos)
+                    st.dataframe(
+                        df[['evento_nome', 'numero', 'status', 'data_reserva']],
+                        column_config={
+                            "evento_nome": "Evento",
+                            "numero": "Número",
+                            "status": "Status",
+                            "data_reserva": "Data Reserva"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Opção para cancelar reservas
+                    numeros = [f"{j['numero']} ({j['evento_nome']})" for j in jogos if j['status'] == 'RESERVADO']
+                    if numeros:
+                        selecao = st.selectbox(
+                            "Selecione uma reserva para cancelar:",
+                            options=numeros
+                        )
+                        
+                        submitted = st.form_submit_button("Cancelar Reserva", type="primary")
+
+                        if submitted:
+                            numero = selecao.split()[0]
+                            evento_nome = selecao.split('(')[1][:-1]
+                            evento_id = next(e['id'] for e in eventos_ativos if e['nome'] == evento_nome)
+                            
+                            try:
+                                JogoController.cancel_reservation(evento_id, numero)
+                                st.success(f"Reserva do número {numero} cancelada!")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao cancelar: {str(e)}")
+                else:
+                    st.info("Você não tem nenhum jogo reservado ou comprado")
+                                    
+        except Exception as e:
+            st.error(f"Erro ao carregar seus jogos: {str(e)}")
+
+
+    @staticmethod
+    def get_reserved_by_user(apelido):
+        """Obtém todos os jogos reservados por um usuário, com nome do evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT j.id, j.numero, j.status, j.data_reserva, 
+                       e.nome as evento_nome
+                    FROM Jogos j
+                    JOIN Eventos e ON j.evento_id = e.id
+                    WHERE j.apelido = %s AND j.status = 'RESERVADO'
+                    ORDER BY e.nome, j.numero""",
+                    (apelido,)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+
+    @staticmethod
+    def _render_number_cell(num_str, evento_id, user_apelido):
+        """Renderiza uma célula de número individual"""
+        try:
+            jogo = JogoController.get_game_info(evento_id, num_str)
+            status = jogo.get('status', 'DISPONIVEL')
+            
+            # Definir cores e interação
+            if status == 'DISPONIVEL':
+                bg_color = '#1E90FF'  # Azul
+                text_color = '#FFFFFF'
+                can_interact = True
+            elif status == 'RESERVADO' and jogo.get('apelido') == user_apelido:
+                bg_color = '#FFD700'  # Amarelo (seu)
+                text_color = '#000000'
+                can_interact = True
+            else:
+                bg_color = '#FF4500'  # Vermelho (outros/vendido)
+                text_color = '#FFFFFF'
+                can_interact = False
+            
+            if can_interact:
+
+                submitted = st.form_submit_button(
+                    num_str,
+                    key=f"btn_{evento_id}_{num_str}",
+                    help=f"Status: {status}",
+                    type='primary' 
+                    if status == 'DISPONIVEL' else 'secondary'
+                   )
+            
+                if submitted:
+                    try:
+                        if status == 'DISPONIVEL':
+                            JogoController.reserve_number(evento_id, num_str, user_apelido)
+                            st.success(f"Número {num_str} reservado!")
+                        else:
+                            JogoController.cancel_reservation(evento_id, num_str)
+                            st.success(f"Reserva do número {num_str} cancelada!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro: {str(e)}")
+            else:
+                st.markdown(
+                    f"""<div style='background-color:{bg_color}; color:{text_color};
+                              border-radius:0.25rem; padding:0.25rem; text-align:center;
+                              font-weight:bold;' title='Número: {num_str}\nStatus: {status}'>
+                        {num_str}
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+                
+        except Exception as e:
+            st.error(f"Erro no número {num_str}: {str(e)}")
+
+
+    @staticmethod
+    def _render_number_grid(evento_id, page, numbers_per_page, user_apelido):
+        """Renderiza a grade de números"""
+        start_num = (page - 1) * numbers_per_page
+        end_num = start_num + numbers_per_page
+        
+        # 25 colunas
+        cols_per_row = 25
+        rows_per_page = numbers_per_page // cols_per_row
+        
+        for row in range(rows_per_page):
+            cols = st.columns(cols_per_row)
+            for col in range(cols_per_row):
+                num = start_num + (row * cols_per_row) + col
+                if num >= end_num:
+                    break
+                
+                num_str = f"{num:03d}"
+                with cols[col]:
+                    JogoView._render_number_cell(num_str, evento_id, user_apelido)
+
+
+--- pagamento_view.py ---
+import streamlit as st
+import pandas as pd
+import time
+from datetime import datetime
+from controllers.apostador_controller import ApostadorController
+from controllers.jogo_controller import JogoController
+from controllers.pagamento_controller import PagamentoController
+
+class PagamentoView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de pagamentos"""
+        st.header("💰 Registrar Pagamento")
+        
+        if not st.session_state.get('user'):
+            st.error("Você precisa estar logado para acessar esta página!")
+            return
+            
+        PagamentoView._show_register_form()
+
+
+    @staticmethod
+    def _show_register_form():
+        """Formulário de registro de pagamento"""
+        with st.form(key="form_registrar_pagamento", clear_on_submit=True):
+            st.subheader("Registrar Novo Pagamento")
+            
+            # 1. Seleção do apostador
+            apostadores = ApostadorController.get_all_active()
+            if not apostadores:
+                st.warning("Nenhum apostador cadastrado!")
+                return
+                
+            apelido = st.selectbox(
+                "Apostador*",
+                options=[a['apelido'] for a in apostadores],
+                format_func=lambda x: f"{x} ({next(a['nome'] for a in apostadores if a['apelido'] == x)})"
+            )
+            
+            # 2. Buscar jogos reservados
+            try:
+                jogos_reservados = JogoController.get_reserved_games(apelido)
+                
+                if not jogos_reservados:
+                    st.warning("Nenhum jogo reservado para este apostador!")
+                    return
+                    
+                # 3. Seleção de jogos
+                jogo_options = {
+                    f"{j['numero']} (Evento: {j['evento_nome']}) - R$ {j['valor']:.2f}": j['numero']
+                    for j in jogos_reservados
+                }
+                
+                selected = st.multiselect(
+                    "Jogos para pagamento*",
+                    options=list(jogo_options.keys()),
+                    default=list(jogo_options.keys())
+                )
+                
+                # 4. Dados do pagamento
+                col1, col2 = st.columns(2)
+                numero_pagamento = col1.text_input("Número do Pagamento*", max_chars=20)
+                valor_total = col2.number_input(
+                    "Valor Total (R$)*",
+                    min_value=0.0,
+                    value=sum(j['valor'] for j in jogos_reservados if f"{j['numero']} (Evento:" in selected),
+                    format="%.2f"
+                )
+                
+                metodo = st.selectbox(
+                    "Método de Pagamento*",
+                    ["PIX", "Dinheiro", "Cartão Débito", "Cartão Crédito", "Transferência"]
+                )
+                
+                observacoes = st.text_area("Observações")
+                
+                # BOTÃO DE SUBMIT CORRETO
+                submitted = st.form_submit_button("Registrar Pagamento")
+                
+                if submitted:
+                    if not numero_pagamento or not selected:
+                        st.error("Campos obrigatórios não preenchidos!")
+                        return
+                    
+                    numeros_jogos = [jogo_options[j] for j in selected]
+                    
+                    try:
+                        PagamentoController.create(
+                            numero=numero_pagamento,
+                            apelido=apelido,
+                            valor=valor_total,
+                            metodo=metodo,
+                            observacoes=observacoes,
+                            jogos=numeros_jogos
+                        )
+                        st.success("Pagamento registrado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao registrar pagamento: {str(e)}")
+                        
+            except Exception as e:
+                st.error(f"Erro ao buscar jogos reservados: {str(e)}")
+                            
+            
+    @staticmethod
+    def _show_search_form():
+        """Formulário de consulta de pagamentos"""
+        st.subheader("Consultar Pagamentos")
+        
+        with st.expander("🔍 Filtros Avançados", expanded=False):
+            col1, col2 = st.columns(2)
+            apelido_filter = col1.selectbox(
+                "Filtrar por apostador",
+                ["Todos"] + [a['apelido'] for a in ApostadorController.get_all_active()],
+                index=0
+            )
+            status_filter = col2.selectbox(
+                "Filtrar por status",
+                ["Todos", "Pendente", "Confirmado", "Cancelado"],
+                index=0
+            )
+            
+            col1, col2 = st.columns(2)
+            data_inicio = col1.date_input("Data inicial", value=datetime.now().replace(day=1))
+            data_fim = col2.date_input("Data final", value=datetime.now())
+            
+            metodo_filter = st.selectbox(
+                "Filtrar por método",
+                ["Todos", "PIX", "Dinheiro", "Cartão Débito", "Cartão Crédito", "Transferência"],
+                index=0
+            )
+        
+        try:
+            pagamentos = PagamentoController.search(
+                apelido=apelido_filter if apelido_filter != "Todos" else None,
+                status=status_filter if status_filter != "Todos" else None,
+                metodo=metodo_filter if metodo_filter != "Todos" else None,
+                data_inicio=data_inicio,
+                data_fim=data_fim
+            )
+            
+            if pagamentos:
+                # Transforma em DataFrame para melhor visualização
+                df = pd.DataFrame(pagamentos)
+                df['data'] = pd.to_datetime(df['data']).dt.strftime('%d/%m/%Y %H:%M')
+                
+                # Formatação condicional
+                def color_status(status):
+                    if status == 'Confirmado':
+                        return 'color: green; font-weight: bold'
+                    elif status == 'Cancelado':
+                        return 'color: red'
+                    else:
+                        return 'color: orange'
+                
+                styled_df = df.style.applymap(
+                    lambda x: color_status(x) if x in ['Confirmado', 'Pendente', 'Cancelado'] else '',
+                    subset=['status']
+                )
+                
+                st.dataframe(
+                    styled_df,
+                    column_config={
+                        "numero": "Número",
+                        "apelido": "Apostador",
+                        "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                        "metodo": "Método",
+                        "status": "Status",
+                        "data": "Data",
+                        "observacoes": "Observações"
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Opções de exportação
+                csv = df.to_csv(index=False, sep=';').encode('utf-8')
+                st.download_button(
+                    label="📥 Exportar para CSV",
+                    data=csv,
+                    file_name=f"pagamentos_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+                
+                # Resumo financeiro
+                st.markdown("### Resumo Financeiro")
+                total = df['valor'].sum()
+                confirmados = df[df['status'] == 'Confirmado']['valor'].sum()
+                pendentes = df[df['status'] == 'Pendente']['valor'].sum()
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Geral", f"R$ {total:,.2f}")
+                col2.metric("Confirmados", f"R$ {confirmados:,.2f}")
+                col3.metric("Pendentes", f"R$ {pendentes:,.2f}")
+                
+            else:
+                st.info("Nenhum pagamento encontrado com os filtros selecionados.")
+                
+        except Exception as e:
+            st.error(f"Erro ao buscar pagamentos: {str(e)}")
+
+    @staticmethod
+    def _show_reports():
+        """Exibe relatórios financeiros"""
+        if not st.session_state.get('user', {}).get('perfil') in ['ADMINISTRADOR', 'DESENVOLVEDOR']:
+            st.error("Acesso restrito a administradores!")
+            return
+        
+        st.subheader("Relatórios Financeiros")
+        
+        tab1, tab2, tab3 = st.tabs(["Consolidado", "Por Método", "Por Apostador"])
+        
+        with tab1:
+            PagamentoView._show_consolidated_report()
+        with tab2:
+            PagamentoView._show_method_report()
+        with tab3:
+            PagamentoView._show_user_report()
+
+    @staticmethod
+    def _show_consolidated_report():
+        """Relatório consolidado de pagamentos"""
+        try:
+            col1, col2 = st.columns(2)
+            ano = col1.selectbox(
+                "Ano",
+                options=range(datetime.now().year, datetime.now().year - 5, -1),
+                index=0,
+                key="report_ano"
+            )
+            mes = col2.selectbox(
+                "Mês",
+                options=range(1, 13),
+                format_func=lambda x: datetime(1900, x, 1).strftime('%B'),
+                index=datetime.now().month - 1,
+                key="report_mes"
+            )
+            
+            report = PagamentoController.get_consolidated_report(ano, mes)
+            
+            if report:
+                df = pd.DataFrame(report)
+                df['dia'] = df['dia'].astype(str)
+                
+                st.markdown(f"### Total do Mês: R$ {df['valor'].sum():,.2f}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.dataframe(
+                        df,
+                        column_config={
+                            "dia": "Dia",
+                            "quantidade": "Qtd Pagamentos",
+                            "valor": st.column_config.NumberColumn("Valor Total", format="R$ %.2f")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                
+                with col2:
+                    st.bar_chart(df.set_index('dia')['valor'])
+                
+                # Exportação
+                st.download_button(
+                    label="📊 Exportar Relatório",
+                    data=df.to_csv(index=False, sep=';').encode('utf-8'),
+                    file_name=f"relatorio_consolidado_{ano}_{mes:02d}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhum dado disponível para o período selecionado.")
+                
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_method_report():
+        """Relatório por método de pagamento"""
+        try:
+            col1, col2 = st.columns(2)
+            ano = col1.selectbox(
+                "Ano",
+                options=range(datetime.now().year, datetime.now().year - 5, -1),
+                index=0,
+                key="method_ano"
+            )
+            mes = col2.selectbox(
+                "Mês",
+                options=range(1, 13),
+                format_func=lambda x: datetime(1900, x, 1).strftime('%B'),
+                index=datetime.now().month - 1,
+                key="method_mes"
+            )
+            
+            report = PagamentoController.get_method_report(ano, mes)
+            
+            if report:
+                df = pd.DataFrame(report)
+                
+                st.markdown(f"### Total por Método: R$ {df['valor'].sum():,.2f}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.dataframe(
+                        df,
+                        column_config={
+                            "metodo": "Método",
+                            "quantidade": "Qtd Pagamentos",
+                            "valor": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
+                            "percentual": st.column_config.NumberColumn("Participação", format="%.1f%%")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                
+                with col2:
+                    st.bar_chart(df.set_index('metodo')['valor'])
+                
+                # Exportação
+                st.download_button(
+                    label="📊 Exportar Relatório",
+                    data=df.to_csv(index=False, sep=';').encode('utf-8'),
+                    file_name=f"relatorio_metodos_{ano}_{mes:02d}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhum dado disponível para o período selecionado.")
+                
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_user_report():
+        """Relatório por apostador"""
+        try:
+            col1, col2 = st.columns(2)
+            ano = col1.selectbox(
+                "Ano",
+                options=range(datetime.now().year, datetime.now().year - 5, -1),
+                index=0,
+                key="user_ano"
+            )
+            mes = col2.selectbox(
+                "Mês",
+                options=range(1, 13),
+                format_func=lambda x: datetime(1900, x, 1).strftime('%B'),
+                index=datetime.now().month - 1,
+                key="user_mes"
+            )
+            
+            report = PagamentoController.get_user_report(ano, mes)
+            
+            if report:
+                df = pd.DataFrame(report)
+                
+                st.markdown(f"### Total por Apostador: R$ {df['valor'].sum():,.2f}")
+                
+                st.dataframe(
+                    df,
+                    column_config={
+                        "apelido": "Apostador",
+                        "quantidade": "Qtd Pagamentos",
+                        "valor": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
+                        "percentual": st.column_config.NumberColumn("Participação", format="%.1f%%")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Exportação
+                st.download_button(
+                    label="📊 Exportar Relatório",
+                    data=df.to_csv(index=False, sep=';').encode('utf-8'),
+                    file_name=f"relatorio_apostadores_{ano}_{mes:02d}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhum dado disponível para o período selecionado.")
+                
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def show_payment_status_update(payment_id):
+        """Componente para atualização de status de pagamento"""
+        try:
+            payment = PagamentoController.get_by_id(payment_id)
+            if not payment:
+                st.error("Pagamento não encontrado!")
+                return False
+            
+            current_status = payment['status']
+            new_status = st.selectbox(
+                "Novo status",
+                ["Confirmado", "Pendente", "Cancelado"],
+                index=["Confirmado", "Pendente", "Cancelado"].index(current_status)
+            ) 
+                       
+            submitted = st.form_submit_button("🔄 Atualizar Status")
+
+            if submitted:
+                if new_status != current_status:
+                    PagamentoController.update_status(payment_id, new_status)
+                    st.success(f"Status atualizado para '{new_status}'!")
+                    return True
+                else:
+                    st.warning("O status não foi alterado.")
+            return False
+        except Exception as e:
+            st.error(f"Erro ao atualizar status: {str(e)}")
+            return False
+
+--- relatorio_view.py ---
+
+from services.whatsapp_service import WhatsAppService
+from controllers.apostador_controller import ApostadorController
+from controllers.evento_controller import EventoController
+from controllers.jogo_controller import JogoController
+from controllers.relatorio_controller import RelatorioController
+
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+
+class RelatorioView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de relatórios"""
+        st.header("📊 Relatórios Consolidados")
+        
+        tab1, tab2, tab3 = st.tabs([
+            "Resumo Geral", 
+            "Por Evento", 
+            "Por Apostador"
+        ])
+        
+        with tab1:
+            RelatorioView._show_general_report()
+        with tab2:
+            RelatorioView._show_event_report()
+        with tab3:
+            RelatorioView._show_user_report()
+
+    @staticmethod
+    def _show_general_report():
+        """Exibe relatório geral consolidado"""
+        with st.form(key="form_relatorio_geral"):
+            st.subheader("📈 Filtros do Relatório")
+            
+            col1, col2 = st.columns(2)
+            start_date = col1.date_input("Data Inicial", 
+                                    value=datetime.now() - timedelta(days=30))
+            end_date = col2.date_input("Data Final", 
+                                    value=datetime.now())
+            
+            nivel_detalhe = st.selectbox(
+                "Nível de Detalhe",
+                ["Resumido", "Detalhado", "Completo"]
+            )
+            
+            # BOTÃO CORRETO dentro do formulário
+            submitted = st.form_submit_button("Gerar Relatório")
+        
+        # Processamento fora do formulário
+        if submitted:
+            try:
+                with st.spinner("Processando dados..."):
+                    report = RelatorioController.get_general_summary(
+                        start_date=start_date,
+                        end_date=end_date,
+                        detail_level=nivel_detalhe
+                    )
+                
+                st.success("Relatório gerado com sucesso!")
+                
+                # Exibição dos resultados
+                st.metric("Total de Eventos", report['total_eventos'])
+                st.metric("Arrecadação Total", f"R$ {report['total_pagamentos']:,.2f}")
+                
+                # Gráfico de eventos por status
+                st.subheader("Eventos por Status")
+                status_df = pd.DataFrame.from_dict(
+                    report['eventos_por_status'], 
+                    orient='index',
+                    columns=['Quantidade']
+                )
+                st.bar_chart(status_df)
+                
+                # Botão de exportação FORA do formulário
+                if st.button("📤 Exportar Relatório"):
+                    # Lógica de exportação aqui
+                    pass
+                    
+            except Exception as e:
+                st.error(f"Erro ao gerar relatório: {str(e)}")
+            
+
+    @staticmethod
+    def _show_event_report():
+        """Exibe relatório por evento específico"""
+        try:
+            st.subheader("🎯 Relatório por Evento")
+            
+            # Obter lista de eventos
+            eventos = RelatorioController.get_events_list()
+            evento_selecionado = st.selectbox(
+                "Selecione o evento:",
+                options=[e['nome'] for e in eventos],
+                format_func=lambda x: x
+            )
+
+            submitted = st.form_submit_button("Gerar Relatório do Evento")
+            
+            if submitted:
+                with st.spinner("Gerando relatório..."):
+                    report = RelatorioController.get_event_report(
+                        evento_id=next(e['id'] for e in eventos if e['nome'] == evento_selecionado)
+                    )
+                
+                # Exibir dados do evento
+                st.write(f"**Evento:** {report['evento']['nome']}")
+                st.write(f"**Tipo:** {report['evento']['tipo']}")
+                st.write(f"**Data:** {report['evento']['data_divulgacao'].strftime('%d/%m/%Y')}")
+                
+                # Métricas
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Jogos Disponíveis", report['jogos_disponiveis'])
+                col2.metric("Jogos Reservados", report['jogos_reservados'])
+                col3.metric("Jogos Vendidos", report['jogos_vendidos'])
+                
+                # Distribuição
+                st.subheader("Distribuição de Jogos")
+                dist_df = pd.DataFrame.from_dict(
+                    report['distribuicao_jogos'],
+                    orient='index',
+                    columns=['Quantidade']
+                )
+                st.bar_chart(dist_df)
+                
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_user_report():
+        """Exibe relatório por apostador"""
+        try:
+            st.subheader("👤 Relatório por Apostador")
+            
+            # Obter lista de apostadores
+            apostadores = RelatorioController.get_users_list()
+            apostador_selecionado = st.selectbox(
+                "Selecione o apostador:",
+                options=[a['apelido'] for a in apostadores],
+                format_func=lambda x: x
+            )
+
+            submitted = st.form_submit_button("Gerar Relatório do Apostador")
+            
+            if submitted:
+                with st.spinner("Gerando relatório..."):
+                    report = RelatorioController.get_user_report(
+                        apelido=apostador_selecionado
+                    )
+                
+                # Exibir dados
+                st.write(f"**Apostador:** {report['apostador']['apelido']}")
+                st.write(f"**Total de Jogos:** {report['total_jogos']}")
+                st.write(f"**Total Gasto:** R$ {report['total_gasto']:,.2f}")
+                
+                # Últimos jogos
+                st.subheader("Últimos Jogos")
+                st.dataframe(
+                    pd.DataFrame(report['ultimos_jogos']),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+
+    @staticmethod
+    def show_jogos_realizados(evento_id):
+        evento = EventoController.get_by_id(evento_id)
+        if not evento:
+            st.error("Evento não encontrado")
+            return
+
+        st.header(f"JOGOS REALIZADOS - {evento['Nome']}")
+        
+        # Cabeçalho
+        col1, col2 = st.columns([4, 1])
+        col1.markdown(f"**LOTERIA**")
+        col2.markdown(f"**Data:** {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        
+        # Informações do evento
+        st.markdown("---")
+        col1, col2, col3 = st.columns(3)
+        col1.markdown(f"**Evento:** {evento['Nome']}")
+        col2.markdown(f"**Tipo:** {evento['Tipo']}")
+        col3.markdown(f"**Data:** {evento['Divulgacao'].strftime('%d/%m/%Y')}")
+        
+        col1, col2 = st.columns(3)
+        col1.markdown(f"**Prêmio:** R$ {evento['valor_premio']:,.2f}")
+        col2.markdown(f"**Trave:** R$ {evento['valor_trave']:,.2f}")
+        col3.markdown(f"**Ticket:** R$ {evento['valor_ticket']:,.2f}")
+        
+        # Legenda
+        st.markdown("---")
+        st.markdown("**Legenda:** 🟦 DISPONÍVEL | 🟨 RESERVADO | 🟥 VENDIDO | ✅ PREMIADO | 🎯 TRAVE")
+        
+        # Grid de números 10x100
+        st.markdown("---")
+        st.subheader("Números Sorteados")
+        
+        # Obter todos os jogos do evento
+        jogos = JogoController.get_all_by_event(evento_id)
+        
+        # Criar grid
+        for row in range(0, 100, 10):
+            cols = st.columns(10)
+            for i in range(10):
+                num = row + i
+                num_str = f"{num:03d}"
+                jogo = next((j for j in jogos if j['numero'] == num_str), None)
+                
+                with cols[i]:
+                    RelatorioView._render_cell_jogo(num_str, jogo, evento)
+        
+    
+    @staticmethod
+    def _render_cell_jogo(num_str, jogo, evento):
+        status = jogo['status'] if jogo else 'DISPONIVEL'
+        
+        # Definir cores e ícones
+        bg_color = {
+            'DISPONIVEL': '#1E90FF',
+            'RESERVADO': '#FFD700',
+            'VENDIDO': '#FF4500'
+        }.get(status, '#CCCCCC')
+        
+        text_color = '#000000' if status == 'RESERVADO' else '#FFFFFF'
+        
+        # Verificar se foi premiado ou trave (exemplo)
+        premiado = num_str == evento.get('Resultado', '')
+        trave = num_str == evento.get('Trave', '')
+        
+        # Construir conteúdo da célula
+        content = f"""
+        <div style='background-color:{bg_color}; color:{text_color}; 
+                    border-radius:0.5rem; padding:0.2rem; text-align:center;
+                    font-weight:bold; min-height:60px; display:flex; 
+                    flex-direction:column; justify-content:space-between;'>
+            <div style='font-size:0.8rem;'>
+                {jogo['apelido'] if jogo and jogo['apelido'] else ''}
+                {"✅" if premiado else "🎯" if trave else ""}
+            </div>
+            <div style='font-size:1.2rem;'>
+                {num_str}
+                {"P" if premiado else "T" if trave else ""}
+            </div>
+        </div>
+        """
+        
+        st.markdown(content, unsafe_allow_html=True)
+        
+        # Adicionar funcionalidade de WhatsApp
+        if jogo and jogo['apelido']:
+            apostador = ApostadorController.get_by_apelido(jogo['apelido'])
+            if apostador and apostador['DDD'] and apostador['Telefone']:        
+                submitted = st.form_submit_button("📱", key=f"whatsapp_{num_str}")
+                if submitted:                
+                    whatsapp_url = WhatsAppService.get_whatsapp_link(
+                        jogo['apelido'],
+                        num_str,
+                        evento['Nome'],
+                        status
+                    )
+                    st.markdown(f"[Enviar mensagem]({whatsapp_url})", unsafe_allow_html=True)
+
+--- __init__.py ---
+# Package initialization
+from .apostador_view import ApostadorView
+from .bilhete_view import BilheteView
+from .evento_view import EventoView
+from .fixo_view import FixoView
+from .jogo_view import JogoView
+from .pagamento_view import PagamentoView
+from .relatorio_view import RelatorioView
+
+__all__ = [
+    'ApostadorView',
+    'BilheteView',
+    'EventoView',
+    'FixoView',
+    'JogoView',
+    'PagamentoView',
+    'RelatorioView'
+]
+
+=== CONTROLLERS ===
+
+--- apostador_controller.py ---
+from models.apostador_model import ApostadorModel
+
+class ApostadorController:
+    @staticmethod
+    def create(nome, apelido, ddd=None, telefone=None, email=None, endereco=None):
+        try:
+            # Verifica se o apelido já existe
+            if ApostadorController.apelido_exists(apelido):
+                raise ValueError(f"O apelido '{apelido}' já está em uso")
+                
+            # Validação adicional
+            if len(apelido) < 3:
+                raise ValueError("O apelido deve ter pelo menos 3 caracteres")
+                
+            return ApostadorModel.create(
+                nome=nome,
+                apelido=apelido,
+                ddd=ddd,
+                telefone=telefone,
+                email=email,
+                endereco=endereco
+            )
+        except Exception as e:
+            raise Exception(f"Erro ao criar apostador: {str(e)}")
+        
+    @staticmethod
+    def search(nome=None, apelido=None, status=None, only_active=False):
+        try:
+            return ApostadorModel.search(
+                nome=nome,
+                apelido=apelido,
+                status=status,
+                only_active=only_active
+            )
+        except Exception as e:
+            raise Exception(f"Erro ao buscar apostadores: {str(e)}")
+        
+    @staticmethod
+    def update(apelido, **kwargs):
+        try:
+            return ApostadorModel.update(apelido, **kwargs)
+        except Exception as e:
+            raise Exception(f"Erro ao atualizar apostador: {str(e)}")
+        
+    @staticmethod
+    def deactivate(apelido):
+        try:
+            # Verificar se o apostador existe antes de desativar
+            if not ApostadorModel.get_by_apelido(apelido):
+                raise ValueError(f"Apostador com apelido '{apelido}' não encontrado")
+                
+            return ApostadorModel.deactivate(apelido)
+        except Exception as e:
+            raise Exception(f"Erro ao desativar apostador: {str(e)}")
+
+    @staticmethod
+    def count_active():
+        """Conta o número de apostadores ativos"""
+        try:
+            return ApostadorModel.count_active()
+        except Exception as e:
+            raise Exception(f"Erro ao contar apostadores ativos: {str(e)}")        
+
+    @staticmethod
+    def apelido_exists(apelido):
+        return ApostadorModel.get_by_apelido(apelido) is not None
+
+    @staticmethod
+    def get_by_apelido(apelido):
+        try:
+            return ApostadorModel.get_by_apelido(apelido)
+        except Exception as e:
+            raise Exception(f"Erro ao buscar apostador: {str(e)}")
+
+    @staticmethod
+    def get_all_active():
+        """Obtém todos os apostadores ativos"""
+        try:
+            return ApostadorModel.search(status='Ativo')
+        except Exception as e:
+            raise Exception(f"Erro ao buscar apostadores ativos: {str(e)}")
+
+--- bilhete_controller.py ---
+from services.db_service import DatabaseService
+from models.bilhete_model import BilheteModel
+
+class BilheteController:
+    @staticmethod
+    def create(**kwargs):
+        return BilheteModel.create(**kwargs)
+    
+    @staticmethod
+    def search(numero=None, tipo=None, status=None, lote=None, data_inicio=None, data_fim=None):
+        try:
+            return BilheteModel.search(
+                numero=numero,
+                tipo=tipo,
+                status=status,
+                lote=lote,
+                data_inicio=data_inicio,
+                data_fim=data_fim
+            )
+        except Exception as e:
+            raise Exception(f"Erro na busca de bilhetes: {str(e)}")
+        
+    @staticmethod
+    def get_available(filters=None):
+        """Obtém bilhetes disponíveis com filtros"""
+        try:
+            return BilheteModel.get_available(filters)
+        except Exception as e:
+            raise Exception(f"Erro ao buscar bilhetes disponíveis: {str(e)}")
+
+    @staticmethod
+    def get_stats():
+        """Obtém estatísticas sobre bilhetes"""
+        try:
+            return BilheteModel.get_stats()
+        except Exception as e:
+            raise Exception(f"Erro ao obter estatísticas: {str(e)}")
+        
+    @staticmethod
+    def get_stats_by_type():
+        """Obtém estatísticas formatadas por tipo"""
+        try:
+            dados = BilheteModel.get_stats_by_type()
+            
+            if not dados:
+                return {
+                    'total': 0,
+                    'por_tipo': {},
+                    'detalhes': []
+                }
+                
+            return {
+                'total': sum(item['quantidade'] for item in dados),
+                'por_tipo': {item['tipo']: item['quantidade'] for item in dados},
+                'detalhes': dados
+            }
+        except Exception as e:
+            raise Exception(f"Erro ao obter estatísticas por tipo: {str(e)}")
+    
+
+    @staticmethod
+    def get_stats_by_lote():
+        """Obtém estatísticas de bilhetes por lote"""
+        try:
+            conn = DatabaseService.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        COALESCE(lote, 'Sem Lote') as lote,
+                        COUNT(*) as quantidade,
+                        (COUNT(*) * 100.0 / (SELECT COUNT(*) FROM Bilhetes)) as percentual
+                    FROM Bilhetes
+                    GROUP BY lote
+                    ORDER BY quantidade DESC
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao obter estatísticas por lote: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_full_report():
+        """Obtém relatório completo de bilhetes"""
+        try:
+            conn = DatabaseService.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        id, numero, tipo, lote, status, 
+                        observacoes, data_cadastro
+                    FROM Bilhetes
+                    ORDER BY data_cadastro DESC
+                """)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao obter relatório completo: {str(e)}")
+        finally:
+            conn.close()
+
+--- evento_controller.py ---
+from services.db_service import DatabaseService
+from models.evento_model import EventoModel
+from .jogo_controller import JogoController
+
+class EventoController:
+    @staticmethod
+    def create(**kwargs):
+            try:
+                return EventoModel.create(**kwargs)
+            except Exception as e:
+                raise Exception(f"Erro ao criar evento: {str(e)}")
+
+    @staticmethod
+    def update(evento_id, **kwargs):
+        try:
+            return EventoModel.update(evento_id, **kwargs)
+        except Exception as e:
+            raise Exception(f"Erro ao atualizar evento: {str(e)}")
+        
+    @staticmethod
+    def count():
+        """Conta o total de eventos"""
+        try:
+            return EventoModel.count()
+        except Exception as e:
+            raise Exception(f"Erro ao contar eventos: {str(e)}")
+
+    @staticmethod
+    def count_by_status():
+        """Conta eventos por status"""
+        try:
+            return EventoModel.count_by_status()
+        except Exception as e:
+            raise Exception(f"Erro ao contar eventos por status: {str(e)}")
+        
+    @staticmethod
+    def update_status(evento_id, novo_status):
+        try:
+            return EventoModel.update_status(evento_id, novo_status)
+        except Exception as e:
+            raise Exception(f"Erro ao atualizar status: {str(e)}")        
+            
+    @staticmethod
+    def get_all(filtro=None):
+        try:
+            eventos = EventoModel.get_all()
+            if filtro:
+                filtro = filtro.lower()
+                return [e for e in eventos 
+                       if filtro in e['nome'].lower() or 
+                       filtro in e['tipo'].lower()]
+            return eventos
+        except Exception as e:
+            raise Exception(f"Erro ao buscar eventos: {str(e)}")
+    
+    @staticmethod
+    def get_by_id(evento_id):
+        try:
+            return EventoModel.get_by_id(evento_id)
+        except Exception as e:
+            raise Exception(f"Erro ao buscar evento: {str(e)}")
+
+    @staticmethod
+    def get_active_events():
+        """Obtém todos os eventos ativos"""
+        try:
+            return EventoModel.get_active_events()
+        except Exception as e:
+            raise Exception(f"Erro ao buscar eventos ativos: {str(e)}")
+
+    @staticmethod
+    def get_active_event_id():
+        """Obtém o ID do primeiro evento ativo encontrado"""
+        try:
+            eventos = EventoModel.get_active_events()
+            return eventos[0]['id'] if eventos else None
+        except Exception as e:
+            raise Exception(f"Erro ao buscar evento ativo: {str(e)}")
+
+--- fixo_controller.py ---
+from services.db_service import DatabaseService
+from models.fixo_model import FixoModel
+
+class FixoController:
+    @staticmethod
+    def create(apelido, numero, grupo=None, status="Ativo"):
+        return FixoModel.create(
+            apelido=apelido,
+            numero=numero,
+            grupo=grupo,
+            status=status
+        )
+    
+    @staticmethod
+    def update(fixo_id, **kwargs):
+        """Atualiza um jogo fixo"""
+        try:
+            return FixoModel.update(fixo_id, **kwargs)
+        except Exception as e:
+            raise Exception(f"Erro ao atualizar jogo fixo: {str(e)}")
+
+    @staticmethod
+    def search(apelido=None, status=None, grupo=None, numero=None):
+        """Busca jogos fixos com filtros"""
+        try:
+            return FixoModel.search(
+                apelido=apelido,
+                status=status,
+                grupo=grupo,
+                numero=numero
+            )
+        except Exception as e:
+            raise Exception(f"Erro ao buscar jogos fixos: {str(e)}")
+
+    @staticmethod
+    def apply_to_event(evento_id, apelido=None, grupo=None):
+        """Aplica jogos fixos a um evento específico"""
+        try:
+            return FixoModel.apply_to_event(
+                evento_id=evento_id,
+                apelido=apelido,
+                grupo=grupo
+            )
+        except Exception as e:
+            raise Exception(f"Erro ao aplicar jogos ao evento: {str(e)}")
+        
+    @staticmethod
+    def count_active():
+        """Conta jogos fixos ativos"""
+        try:
+            conn = DatabaseService.get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM Fixos 
+                    WHERE status = 'Ativo'
+                """)
+                return cur.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Erro ao contar jogos fixos ativos: {str(e)}")
+        finally:
+            conn.close()        
+            
+    @staticmethod
+    def get_all():
+        """Obtém todos os jogos fixos"""
+        try:
+            return FixoModel.search()  # Usa o método search sem filtros para obter todos
+        except Exception as e:
+            raise Exception(f"Erro ao buscar todos os jogos fixos: {str(e)}")
+    
+    @staticmethod
+    def get_all_active():
+        """Obtém todos os jogos fixos ativos"""
+        try:
+            return FixoModel.get_all_active()
+        except Exception as e:
+            raise Exception(f"Erro ao buscar jogos fixos ativos: {str(e)}")
+        
+    @staticmethod
+    def get_by_id(fixo_id):
+        """Obtém um jogo fixo pelo ID"""
+        try:
+            return FixoModel.get_by_id(fixo_id)
+        except Exception as e:
+            raise Exception(f"Erro ao buscar jogo fixo por ID: {str(e)}")
+            
+    @staticmethod
+    def batch_update_status(apelido=None, grupo=None, status='Ativo'):
+        """Atualiza status em lote para jogos fixos"""
+        try:
+            return FixoModel.batch_update_status(apelido, grupo, status)
+        except Exception as e:
+            raise Exception(f"Erro ao atualizar status em lote: {str(e)}")
+
+--- jogo_controller.py ---
+from services.db_service import DatabaseService
+from models.jogo_model import JogoModel
+from .fixo_controller import FixoController
+from .pagamento_controller import PagamentoController
+
+class JogoController:
+    @staticmethod
+    def create_for_event(evento_id):
+        """Cria todos os números (000-999) para um novo evento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                # Verificar se já existem jogos para este evento
+                cur.execute("SELECT COUNT(*) FROM Jogos WHERE evento_id = %s", (evento_id,))
+                if cur.fetchone()[0] > 0:
+                    raise Exception("Jogos já criados para este evento")
+                
+                # Inserir todos os números de 000 a 999
+                for num in range(1000):
+                    num_str = f"{num:03d}"
+                    cur.execute(
+                        "INSERT INTO Jogos (evento_id, numero) VALUES (%s, %s)",
+                        (evento_id, num_str)
+                        )
+                
+                # Reservar números para jogadores fixos
+                fixos = FixoController.get_all_active()
+                for fixo in fixos:
+                    try:
+                        cur.execute(
+                            """UPDATE Jogos 
+                            SET status = 'RESERVADO', 
+                                apelido = %s 
+                            WHERE evento_id = %s AND numero = %s""",
+                            (fixo['apelido'], evento_id, fixo['numero'])
+                        )
+                        
+                        # Criar registro de pagamento pendente
+                        PagamentoController.create(
+                            numero=f"FIXO-{evento_id}-{fixo['numero']}",
+                            apelido=fixo['apelido'],
+                            valor=0,  # Será atualizado depois
+                            metodo="FIXO",
+                            observacoes=f"Jogo fixo {fixo['numero']}",
+                            jogos=[fixo['numero']]
+                        )
+                    except Exception as e:
+                        print(f"Erro ao reservar número fixo {fixo['numero']}: {str(e)}")
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao criar jogos para o evento: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def reserve_number(evento_id, numero, apelido):
+        """Reserva um número para um apostador"""
+        return JogoModel.reserve_number(evento_id, numero, apelido)
+    
+    @staticmethod
+    def cancel_reservation(evento_id, numero):
+        """Cancela uma reserva"""
+        return JogoModel.cancel_reservation(evento_id, numero)
+            
+    @staticmethod
+    def get_user_games(evento_id, apelido):
+        """Obtém todos os jogos de um usuário em um evento"""
+        return JogoModel.get_by_user(evento_id, apelido)
+            
+    @staticmethod
+    def get_game_info(evento_id, numero):
+        """Obtém informações sobre um jogo específico"""
+        return JogoModel.get_by_number(evento_id, numero)
+        
+
+    @staticmethod
+    def get_reserved_games(apelido):
+        """Obtém jogos reservados por um apostador"""
+        try:
+            return JogoModel.get_reserved_by_user(apelido)
+        except Exception as e:
+            raise Exception(f"Erro ao buscar jogos reservados: {str(e)}")
+
+        
+    @staticmethod
+    def get_all_by_event(evento_id):
+        """Obtém todos os jogos de um evento específico"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, numero, status, apelido, 
+                       data_reserva, data_venda 
+                       FROM Jogos 
+                       WHERE evento_id = %s
+                       ORDER BY numero""",
+                    (evento_id,)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+--- pagamento_controller.py ---
+from services.db_service import DatabaseService
+from models.pagamento_model import PagamentoModel
+
+class PagamentoController:
+    @staticmethod
+    def create(numero, apelido, valor, metodo, observacoes, jogos):
+        """Registra um novo pagamento e marca os jogos como vendidos"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                # 1. Verifica se os jogos ainda estão reservados
+                for num in jogos:
+                    cur.execute(
+                        """SELECT status FROM Jogos 
+                        WHERE numero = %s AND apelido = %s""",
+                        (num, apelido)
+                    )
+                    result = cur.fetchone()
+                    if not result or result[0] != 'RESERVADO':
+                        raise ValueError(f"Jogo {num} não está mais disponível para pagamento")
+                
+                # 2. Insere o pagamento
+                cur.execute(
+                    """INSERT INTO Pagamentos 
+                    (numero, apelido, valor, metodo, observacoes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id""",
+                    (numero, apelido, valor, metodo, observacoes)
+                )
+                pagamento_id = cur.fetchone()[0]
+                
+                # 3. Atualiza o status dos jogos
+                for num in jogos:
+                    cur.execute(
+                        """UPDATE Jogos 
+                        SET status = 'VENDIDO', 
+                            data_venda = CURRENT_TIMESTAMP
+                        WHERE numero = %s AND apelido = %s""",
+                        (num, apelido)
+                    )
+                
+                conn.commit()
+                return pagamento_id
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao registrar pagamento: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def search(apelido=None, status=None, metodo=None, data_inicio=None, data_fim=None):
+        """Busca pagamentos com filtros"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """SELECT p.id, p.numero, p.apelido, a.Nome as nome_apostador,
+                          p.valor, p.metodo, p.status, p.data_registro as data,
+                          p.observacoes
+                          FROM Pagamentos p
+                          JOIN Apostadores a ON p.apelido = a.Apelido
+                          WHERE 1=1"""
+                params = []
+                
+                if apelido:
+                    query += " AND p.apelido = %s"
+                    params.append(apelido)
+                
+                if status:
+                    query += " AND p.status = %s"
+                    params.append(status)
+                
+                if metodo:
+                    query += " AND p.metodo = %s"
+                    params.append(metodo)
+                
+                if data_inicio:
+                    query += " AND p.data_registro >= %s"
+                    params.append(data_inicio)
+                
+                if data_fim:
+                    query += " AND p.data_registro <= %s"
+                    params.append(data_fim)
+                
+                query += " ORDER BY p.data_registro DESC"
+                
+                cur.execute(query, params)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao buscar pagamentos: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def update_status(pagamento_id, novo_status):
+        """Atualiza o status de um pagamento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE Pagamentos 
+                    SET status = %s 
+                    WHERE id = %s""",
+                    (novo_status, pagamento_id)
+                )
+                conn.commit()
+                return cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            raise Exception(f"Erro ao atualizar status: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_by_id(pagamento_id):
+        """Obtém um pagamento pelo ID"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT p.id, p.numero, p.apelido, a.Nome as nome_apostador,
+                       p.valor, p.metodo, p.status, p.data_registro, p.observacoes
+                       FROM Pagamentos p
+                       JOIN Apostadores a ON p.apelido = a.Apelido
+                       WHERE p.id = %s""",
+                    (pagamento_id,)
+                )
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(columns, row)) if row else None
+        except Exception as e:
+            raise Exception(f"Erro ao buscar pagamento: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_consolidated_report(ano, mes):
+        """Gera relatório consolidado por dia"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 
+                        EXTRACT(DAY FROM data_registro)::integer as dia,
+                        COUNT(*) as quantidade,
+                        SUM(valor) as valor
+                       FROM Pagamentos
+                       WHERE EXTRACT(YEAR FROM data_registro) = %s
+                       AND EXTRACT(MONTH FROM data_registro) = %s
+                       GROUP BY dia
+                       ORDER BY dia""",
+                    (ano, mes)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao gerar relatório: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_method_report(ano, mes):
+        """Gera relatório por método de pagamento"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 
+                        metodo,
+                        COUNT(*) as quantidade,
+                        SUM(valor) as valor,
+                        (SUM(valor) * 100 / (SELECT SUM(valor) FROM Pagamentos 
+                            WHERE EXTRACT(YEAR FROM data_registro) = %s
+                            AND EXTRACT(MONTH FROM data_registro) = %s) as percentual
+                       FROM Pagamentos
+                       WHERE EXTRACT(YEAR FROM data_registro) = %s
+                       AND EXTRACT(MONTH FROM data_registro) = %s
+                       GROUP BY metodo
+                       ORDER BY valor DESC""",
+                    (ano, mes, ano, mes)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao gerar relatório: {str(e)}")
+        finally:
+            conn.close()
+
+    @staticmethod
+    def get_user_report(ano, mes):
+        """Gera relatório por apostador"""
+        conn = DatabaseService.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 
+                        p.apelido,
+                        a.Nome as nome,
+                        COUNT(*) as quantidade,
+                        SUM(p.valor) as valor,
+                        (SUM(p.valor) * 100 / (SELECT SUM(valor) FROM Pagamentos 
+                            WHERE EXTRACT(YEAR FROM data_registro) = %s
+                            AND EXTRACT(MONTH FROM data_registro) = %s) as percentual
+                       FROM Pagamentos p
+                       JOIN Apostadores a ON p.apelido = a.Apelido
+                       WHERE EXTRACT(YEAR FROM p.data_registro) = %s
+                       AND EXTRACT(MONTH FROM p.data_registro) = %s
+                       GROUP BY p.apelido, a.Nome
+                       ORDER BY valor DESC""",
+                    (ano, mes, ano, mes)
+                )
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Erro ao gerar relatório: {str(e)}")
+        finally:
+            conn.close()
+
+--- relatorio_controller.py ---
+from models.evento_model import EventoModel
+from models.apostador_model import ApostadorModel
+from models.jogo_model import JogoModel
+from models.pagamento_model import PagamentoModel
+
+class RelatorioController:
+    @staticmethod
+    def get_general_summary(start_date, end_date):
+        """Gera um resumo geral do sistema"""
+        return {
+            "total_eventos": EventoModel.count(),
+            "apostadores_ativos": ApostadorModel.count_active(),
+            "total_jogos": JogoModel.count(),
+            "total_pagamentos": PagamentoModel.total_amount(start_date, end_date),
+            "eventos_por_status": EventoModel.count_by_status(),
+            "pagamentos_por_metodo": PagamentoModel.sum_by_method(start_date, end_date)
+        }
+    
+
+    @staticmethod
+    def get_events_list():
+        """Obtém lista de eventos para seleção"""
+        return EventoModel.get_all()
+    
+
+    @staticmethod
+    def get_event_report(evento_id):
+        """Gera relatório detalhado de um evento"""
+        return {
+            "evento": EventoModel.get_by_id(evento_id),
+            "total_jogos": JogoModel.count_by_event(evento_id),
+            "jogos_disponiveis": JogoModel.count_by_event_and_status(evento_id, "DISPONIVEL"),
+            "jogos_reservados": JogoModel.count_by_event_and_status(evento_id, "RESERVADO"),
+            "jogos_vendidos": JogoModel.count_by_event_and_status(evento_id, "VENDIDO"),
+            "arrecadacao_total": JogoModel.total_amount_by_event(evento_id),
+            "distribuicao_jogos": JogoModel.status_distribution(evento_id),
+            "top_apostadores": JogoModel.top_users_by_event(evento_id)
+        }
+    
+
+    @staticmethod
+    def get_users_list():
+        """Obtém lista de apostadores para seleção"""
+        return ApostadorModel.get_all_active()
+    
+
+    @staticmethod
+    def get_user_report(apelido):
+        """Gera relatório detalhado de um apostador"""
+        return {
+            "apostador": ApostadorModel.get_by_apelido(apelido),
+            "total_jogos": JogoModel.count_by_user(apelido),
+            "total_gasto": PagamentoModel.total_amount_by_user(apelido),
+            "ultimos_jogos": JogoModel.get_last_by_user(apelido, limit=10)
+        }
+
+--- __init__.py ---
+# Package initialization
+
+

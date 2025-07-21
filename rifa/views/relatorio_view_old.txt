@@ -1,0 +1,451 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
+from controllers import (
+    RelatorioController, 
+    EventoController,
+    ApostadorController,
+    JogoController,
+    PagamentoController
+)
+from services import DatabaseService
+
+class RelatorioView:
+    @staticmethod
+    def show_form():
+        """Exibe o formulário principal de relatórios"""
+        st.header("📊 Relatórios Consolidados")
+        
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Resumo Geral", 
+            "Por Evento", 
+            "Por Apostador", 
+            "Personalizado"
+        ])
+        
+        with tab1:
+            RelatorioView._show_general_report()
+        with tab2:
+            RelatorioView._show_event_report()
+        with tab3:
+            RelatorioView._show_user_report()
+        with tab4:
+            RelatorioView._show_custom_report()
+
+    @staticmethod
+    def _show_general_report():
+        """Relatório geral consolidado"""
+        st.subheader("Resumo Geral do Sistema")
+        
+        try:
+            # Período de análise
+            col1, col2 = st.columns(2)
+            start_date = col1.date_input(
+                "Data inicial", 
+                value=datetime.now().replace(day=1)
+            )
+            end_date = col2.date_input(
+                "Data final", 
+                value=datetime.now()
+            )
+            
+            if st.button("Gerar Relatório"):
+                with st.spinner("Processando dados..."):
+                    # Dados consolidados
+                    summary = RelatorioController.get_general_summary(start_date, end_date)
+                    
+                    # Métricas principais
+                    st.markdown("### 📈 Métricas Principais")
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total de Eventos", summary['total_eventos'])
+                    col2.metric("Apostadores Ativos", summary['apostadores_ativos'])
+                    col3.metric("Jogos Registrados", summary['total_jogos'])
+                    col4.metric("Pagamentos (R$)", f"{summary['total_pagamentos']:,.2f}")
+                    
+                    st.markdown("---")
+                    
+                    # Gráfico de eventos
+                    st.markdown("### 🗓️ Eventos por Status")
+                    event_df = pd.DataFrame(summary['eventos_por_status'])
+                    fig = px.pie(
+                        event_df, 
+                        names='status', 
+                        values='quantidade',
+                        color='status',
+                        color_discrete_map={
+                            'Ativo': '#1f77b4',
+                            'Concluído': '#2ca02c',
+                            'Cancelado': '#d62728'
+                        }
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.markdown("---")
+                    
+                    # Gráfico de pagamentos
+                    st.markdown("### 💰 Pagamentos por Método")
+                    payment_df = pd.DataFrame(summary['pagamentos_por_metodo'])
+                    fig = px.bar(
+                        payment_df,
+                        x='metodo',
+                        y='valor',
+                        color='metodo',
+                        labels={'valor': 'Valor (R$)', 'metodo': 'Método'},
+                        text='valor'
+                    )
+                    fig.update_traces(texttemplate='R$ %{text:,.2f}', textposition='outside')
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Exportação
+                    st.markdown("---")
+                    st.markdown("### 📤 Exportar Dados")
+                    
+                    export_data = {
+                        "Métricas Principais": pd.DataFrame({
+                            "Indicador": [
+                                "Total de Eventos", 
+                                "Apostadores Ativos", 
+                                "Jogos Registrados", 
+                                "Total Pagamentos"
+                            ],
+                            "Valor": [
+                                summary['total_eventos'],
+                                summary['apostadores_ativos'],
+                                summary['total_jogos'],
+                                summary['total_pagamentos']
+                            ]
+                        }),
+                        "Eventos por Status": event_df,
+                        "Pagamentos por Método": payment_df
+                    }
+                    
+                    st.download_button(
+                        label="📊 Exportar para Excel",
+                        data=RelatorioView._export_to_excel(export_data),
+                        file_name=f"relatorio_geral_{start_date}_{end_date}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_event_report():
+        """Relatório detalhado por evento"""
+        st.subheader("Relatório por Evento")
+        
+        try:
+            # Seleção do evento
+            eventos = EventoController.get_all()
+            evento_options = {f"{e['nome']} (ID: {e['id']})": e['id'] for e in eventos}
+            evento_selecionado = st.selectbox(
+                "Selecione o evento:",
+                options=list(evento_options.keys())
+            )
+            evento_id = evento_options[evento_selecionado]
+            
+            if st.button("Gerar Relatório do Evento"):
+                with st.spinner("Processando dados do evento..."):
+                    report = RelatorioController.get_event_report(evento_id)
+                    
+                    # Informações básicas do evento
+                    st.markdown(f"### 🎯 Evento: {report['evento']['nome']}")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Data", report['evento']['divulgacao'].strftime('%d/%m/%Y'))
+                    col2.metric("Prêmio", f"R$ {report['evento']['premio']:,.2f}")
+                    col3.metric("Status", report['evento']['status'])
+                    
+                    st.markdown("---")
+                    
+                    # Distribuição de jogos
+                    st.markdown("### 🎰 Distribuição de Jogos")
+                    jogo_df = pd.DataFrame(report['distribuicao_jogos'])
+                    fig = px.pie(
+                        jogo_df,
+                        names='status',
+                        values='quantidade',
+                        color='status',
+                        color_discrete_map={
+                            'DISPONIVEL': '#1f77b4',
+                            'RESERVADO': '#ff7f0e',
+                            'VENDIDO': '#2ca02c'
+                        }
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Top apostadores
+                    st.markdown("### 🏆 Top Apostadores")
+                    apostador_df = pd.DataFrame(report['top_apostadores'])
+                    st.dataframe(
+                        apostador_df,
+                        column_config={
+                            "apelido": "Apostador",
+                            "quantidade_jogos": "Jogos",
+                            "valor_total": st.column_config.NumberColumn(
+                                "Valor Total", 
+                                format="R$ %.2f"
+                            )
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Exportação
+                    st.markdown("---")
+                    st.download_button(
+                        label="📥 Exportar Relatório",
+                        data=RelatorioView._export_event_report(report),
+                        file_name=f"relatorio_evento_{evento_id}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_user_report():
+        """Relatório por apostador"""
+        st.subheader("Relatório por Apostador")
+        
+        try:
+            # Seleção do apostador
+            apostadores = ApostadorController.get_all_active()
+            apostador_options = {
+                f"{a['apelido']} ({a['nome']})": a['apelido'] for a in apostadores
+            }
+            apostador_selecionado = st.selectbox(
+                "Selecione o apostador:",
+                options=list(apostador_options.keys())
+            )
+            apelido = apostador_options[apostador_selecionado]
+            
+            # Período de análise
+            col1, col2 = st.columns(2)
+            start_date = col1.date_input(
+                "Data inicial", 
+                value=datetime.now().replace(day=1),
+                key="user_start_date"
+            )
+            end_date = col2.date_input(
+                "Data final", 
+                value=datetime.now(),
+                key="user_end_date"
+            )
+            
+            if st.button("Gerar Relatório do Apostador"):
+                with st.spinner("Processando dados do apostador..."):
+                    report = RelatorioController.get_user_report(
+                        apelido, 
+                        start_date, 
+                        end_date
+                    )
+                    
+                    # Informações básicas
+                    st.markdown(f"### 👤 Apostador: {apelido}")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total de Jogos", report['total_jogos'])
+                    col2.metric("Jogos Ativos", report['jogos_ativos'])
+                    col3.metric("Total Gasto", f"R$ {report['total_gasto']:,.2f}")
+                    
+                    st.markdown("---")
+                    
+                    # Histórico de jogos
+                    st.markdown("### 🎲 Histórico de Jogos")
+                    jogo_df = pd.DataFrame(report['historico_jogos'])
+                    st.dataframe(
+                        jogo_df,
+                        column_config={
+                            "evento_nome": "Evento",
+                            "numero": "Número",
+                            "status": "Status",
+                            "data_reserva": "Data Reserva",
+                            "data_venda": "Data Venda",
+                            "valor": st.column_config.NumberColumn(
+                                "Valor", 
+                                format="R$ %.2f"
+                            )
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Histórico de pagamentos
+                    st.markdown("### 💵 Histórico de Pagamentos")
+                    pagamento_df = pd.DataFrame(report['historico_pagamentos'])
+                    st.dataframe(
+                        pagamento_df,
+                        column_config={
+                            "numero": "Número",
+                            "valor": st.column_config.NumberColumn(
+                                "Valor", 
+                                format="R$ %.2f"
+                            ),
+                            "metodo": "Método",
+                            "status": "Status",
+                            "data": "Data"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Exportação
+                    st.markdown("---")
+                    st.download_button(
+                        label="📥 Exportar Relatório",
+                        data=RelatorioView._export_user_report(report),
+                        file_name=f"relatorio_apostador_{apelido}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _show_custom_report():
+        """Relatório personalizado"""
+        st.subheader("Relatório Personalizado")
+        
+        try:
+            with st.form("form_relatorio_personalizado"):
+                # Filtros
+                st.markdown("### 🔍 Filtros")
+                
+                col1, col2 = st.columns(2)
+                start_date = col1.date_input(
+                    "Data inicial", 
+                    value=datetime.now().replace(day=1),
+                    key="custom_start_date"
+                )
+                end_date = col2.date_input(
+                    "Data final", 
+                    value=datetime.now(),
+                    key="custom_end_date"
+                )
+                
+                col1, col2 = st.columns(2)
+                evento_id = col1.selectbox(
+                    "Evento",
+                    options=["Todos"] + [e['id'] for e in EventoController.get_all()],
+                    format_func=lambda x: "Todos" if x == "Todos" else EventoController.get_event_name(x)
+                )
+                status_jogo = col2.selectbox(
+                    "Status do Jogo",
+                    ["Todos", "DISPONIVEL", "RESERVADO", "VENDIDO"]
+                )
+                
+                col1, col2 = st.columns(2)
+                apelido = col1.selectbox(
+                    "Apostador",
+                    options=["Todos"] + [a['apelido'] for a in ApostadorController.get_all_active()]
+                )
+                status_pagamento = col2.selectbox(
+                    "Status do Pagamento",
+                    ["Todos", "Pendente", "Confirmado", "Cancelado"]
+                )
+                
+                # Opções de exibição
+                st.markdown("### 👀 Campos a Incluir")
+                col1, col2, col3 = st.columns(3)
+                show_event = col1.checkbox("Evento", True)
+                show_user = col1.checkbox("Apostador", True)
+                show_game = col2.checkbox("Jogo", True)
+                show_payment = col2.checkbox("Pagamento", True)
+                show_dates = col3.checkbox("Datas", True)
+                show_values = col3.checkbox("Valores", True)
+                
+                if st.form_submit_button("Gerar Relatório"):
+                    with st.spinner("Processando relatório personalizado..."):
+                        filters = {
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "evento_id": evento_id if evento_id != "Todos" else None,
+                            "status_jogo": status_jogo if status_jogo != "Todos" else None,
+                            "apelido": apelido if apelido != "Todos" else None,
+                            "status_pagamento": status_pagamento if status_pagamento != "Todos" else None,
+                            "fields": {
+                                "evento": show_event,
+                                "apostador": show_user,
+                                "jogo": show_game,
+                                "pagamento": show_payment,
+                                "datas": show_dates,
+                                "valores": show_values
+                            }
+                        }
+                        
+                        report = RelatorioController.get_custom_report(filters)
+                        df = pd.DataFrame(report['data'])
+                        
+                        st.markdown(f"### 📋 Resultados ({len(df)} registros)")
+                        st.dataframe(
+                            df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # Exportação
+                        st.markdown("---")
+                        st.download_button(
+                            label="📥 Exportar Relatório",
+                            data=df.to_csv(index=False, sep=';').encode('utf-8'),
+                            file_name=f"relatorio_personalizado_{start_date}_{end_date}.csv",
+                            mime="text/csv"
+                        )
+                        
+        except Exception as e:
+            st.error(f"Erro ao gerar relatório: {str(e)}")
+
+    @staticmethod
+    def _export_to_excel(data_dict):
+        """Exporta múltiplas planilhas para um arquivo Excel"""
+        from io import BytesIO
+        import openpyxl
+        
+        output = BytesIO()
+        writer = pd.ExcelWriter(output, engine='openpyxl')
+        
+        for sheet_name, df in data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        writer.close()
+        processed_data = output.getvalue()
+        return processed_data
+
+    @staticmethod
+    def _export_event_report(report):
+        """Prepara relatório de evento para exportação"""
+        data_dict = {
+            "Resumo": pd.DataFrame({
+                "Evento": [report['evento']['nome']],
+                "Data": [report['evento']['divulgacao'].strftime('%d/%m/%Y')],
+                "Prêmio": [report['evento']['premio']],
+                "Status": [report['evento']['status']],
+                "Total Jogos": [report['total_jogos']],
+                "Jogos Disponíveis": [report['jogos_disponiveis']],
+                "Jogos Reservados": [report['jogos_reservados']],
+                "Jogos Vendidos": [report['jogos_vendidos']],
+                "Arrecadação Total (R$)": [report['arrecadacao_total']]
+            }),
+            "Distribuição Jogos": pd.DataFrame(report['distribuicao_jogos']),
+            "Top Apostadores": pd.DataFrame(report['top_apostadores'])
+        }
+        
+        return RelatorioView._export_to_excel(data_dict)
+
+    @staticmethod
+    def _export_user_report(report):
+        """Prepara relatório de apostador para exportação"""
+        data_dict = {
+            "Resumo": pd.DataFrame({
+                "Apostador": [report['apelido']],
+                "Total Jogos": [report['total_jogos']],
+                "Jogos Ativos": [report['jogos_ativos']],
+                "Total Gasto (R$)": [report['total_gasto']],
+                "Primeira Participação": [report['primeira_participacao']],
+                "Última Participação": [report['ultima_participacao']]
+            }),
+            "Histórico Jogos": pd.DataFrame(report['historico_jogos']),
+            "Histórico Pagamentos": pd.DataFrame(report['historico_pagamentos'])
+        }
+        
+        return RelatorioView._export_to_excel(data_dict)
